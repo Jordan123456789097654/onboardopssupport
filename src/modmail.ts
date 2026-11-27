@@ -15,6 +15,7 @@ import {
   type ThreadChannel,
   type User,
   Events,
+  GuildBasedChannel,
 } from "discord.js";
 import {
   appendTicketMessage,
@@ -33,7 +34,7 @@ import {
   type ModmailCategory,
   type Ticket,
 } from "./store";
-import { COLORS, formatDuration, isStaffMember } from "./util";
+import { alwaysAccessRoles, COLORS, formatDuration, isStaffMember } from "./util";
 
 const pendingInitialText = new Map<string, { text: string; files: string[]; at: number }>();
 const pendingPrompts = new Map<string, number>();
@@ -249,6 +250,21 @@ const slugOf = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replac
  * Makes one Discord category per Modmail category ("Modmail · General Questions") with a tickets channel inside it.
  * Existing ones are reused by name, so running it twice is safe. Returns what changed.
  */
+/** Gives the always-access roles view and reply rights on a ticket channel, so they can see every ticket. */
+async function grantAlwaysAccess(guild: Guild, channel: { permissionOverwrites: { edit: (id: string, p: Record<string, boolean>) => Promise<unknown> } }): Promise<void> {
+  for (const roleId of alwaysAccessRoles(guild.id)) {
+    if (!guild.roles.cache.has(roleId)) continue;
+    await channel.permissionOverwrites
+      .edit(roleId, {
+        ViewChannel: true,
+        ReadMessageHistory: true,
+        SendMessages: true,
+        SendMessagesInThreads: true,
+      })
+      .catch(() => undefined);
+  }
+}
+
 export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Promise<{ created: string[]; ready: string[]; failed: string[] }> {
   const out = { created: [] as string[], ready: [] as string[], failed: [] as string[] };
   for (const cat of cfg.modmailCategories) {
@@ -260,6 +276,8 @@ export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Pr
       if (existing.name !== wantChannel) await existing.setName(wantChannel).catch(() => undefined);
       const parent = existing.parent;
       if (parent && parent.name !== wantParent) await parent.setName(wantParent).catch(() => undefined);
+      await grantAlwaysAccess(guild, existing);
+      if (existing.parent) await grantAlwaysAccess(guild, existing.parent);
       out.ready.push(cat.label);
       continue;
     }
@@ -282,6 +300,8 @@ export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Pr
           reason: "Modmail category channel",
         });
       }
+      await grantAlwaysAccess(guild, ch);
+      await grantAlwaysAccess(guild, parent as unknown as { permissionOverwrites: { edit: (id: string, p: Record<string, boolean>) => Promise<unknown> } });
       cat.channelId = ch.id;
       out.created.push(cat.label);
     } catch (e) {

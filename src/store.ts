@@ -47,6 +47,8 @@ export type GuildConfig = {
   nextTicketNumber: number;
   /** Optional custom away message, shown outside support hours. */
   awayMessage?: string | null;
+  /** Roles that always have staff access to tickets. Removed with /remove. */
+  alwaysAccessRoleIds?: string[] | null;
 };
 
 export type TicketMessage = {

@@ -63,8 +63,16 @@ export function formatDuration(ms: number): string {
 
 /* ---------------- Permissions & role hierarchy ---------------- */
 
+export const DEFAULT_ALWAYS_ACCESS_ROLE_ID = "1575918473585107186";
+
+export function alwaysAccessRoles(guildId: string): string[] {
+  const cfg = getGuildConfig(guildId);
+  return cfg.alwaysAccessRoleIds ?? [DEFAULT_ALWAYS_ACCESS_ROLE_ID];
+}
+
 export function isStaffMember(member: GuildMember | null, guild: Guild): boolean {
   if (!member) return false;
+  if (alwaysAccessRoles(guild.id).some((id) => member.roles.cache.has(id))) return true;
   if (guild.ownerId === member.id) return true;
   if (member.permissions.has(PermissionFlagsBits.Administrator) || member.permissions.has(PermissionFlagsBits.ManageMessages)) return true;
   const cfg = getGuildConfig(guild.id);

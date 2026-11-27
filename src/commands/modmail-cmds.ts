@@ -1,5 +1,5 @@
 import { ChannelType, EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder, type TextChannel } from "discord.js";
-import { parseDuration as parseDur, formatDuration as fmtDur } from "../util";
+import { DEFAULT_ALWAYS_ACCESS_ROLE_ID, parseDuration as parseDur, formatDuration as fmtDur } from "../util";
 import { scheduleSave as saveTicket, type ScheduledReply } from "../store";
 import { closeTicketNow, ensureCategoryChannels, openTicket, requestCloseFromCustomer, resolveTicketWithDelay, sendStaffReply, transferTicket } from "../modmail";
 import {
@@ -669,8 +669,35 @@ const scheduleCommand: Command = {
   },
 };
 
+const removeAccessCommand: Command = {
+  json: new SlashCommandBuilder()
+    .setName("remove")
+    .setDescription("Take a role off the always-access list, so it no longer has staff access to tickets")
+    .addRoleOption((o) => o.setName("role").setDescription("The role to remove").setRequired(true))
+    .setDMPermission(false)
+    .toJSON(),
+  async run(i) {
+    const member = await i.guild!.members.fetch(i.user.id).catch(() => null);
+    if (!member?.permissions.has(PermissionFlagsBits.ManageGuild)) {
+      await missingPermReply(i, "Manage Server");
+      return;
+    }
+    const role = i.options.getRole("role", true);
+    const cfg = getGuildConfig(i.guildId!);
+    const list = cfg.alwaysAccessRoleIds ?? [DEFAULT_ALWAYS_ACCESS_ROLE_ID];
+    if (!list.includes(role.id)) {
+      await i.reply({ content: `<@&${role.id}> isn't on the always-access list.`, ephemeral: true });
+      return;
+    }
+    cfg.alwaysAccessRoleIds = list.filter((id) => id !== role.id);
+    scheduleSave();
+    await i.reply({ content: `<@&${role.id}> no longer has automatic access to tickets.`, ephemeral: true, allowedMentions: { parse: [] } });
+  },
+};
+
 export const modmailCommands: Command[] = [
   modmailConfig,
+  removeAccessCommand,
   onewayCommand,
   snoozeCommand,
   scheduleCommand,
