@@ -123,7 +123,7 @@ type StoreData = {
 export const DEFAULT_CATEGORIES: ModmailCategory[] = [
   { id: "general", emoji: "💬", label: "General Questions", description: "Ask us anything about the server or team" },
   { id: "tech", emoji: "🔧", label: "Technical Help", description: "Setup, troubleshooting and bug fixes" },
-  { id: "orders", emoji: "🔑", label: "Licenses & Orders", description: "Purchases, keys and billing" },
+  { id: "orders", emoji: "⚖️", label: "Legal Inquiries", description: "Legal questions, contracts, notices and compliance" },
   { id: "careers", emoji: "🤝", label: "Careers & Team", description: "Applications and staff matters" },
 ];
 
@@ -287,6 +287,21 @@ export function saveGuildConfig(cfg: GuildConfig): void {
 
 export function getAllGuildConfigs(): GuildConfig[] {
   return Object.values(data.guilds);
+}
+
+/** Renames the old "Licenses & Orders" category to "Legal Inquiries" on guilds that already have it. Returns true if anything changed. */
+export function migrateLegalCategory(cfg: GuildConfig): boolean {
+  let changed = false;
+  for (const c of cfg.modmailCategories) {
+    if (c.label === "Licenses & Orders") {
+      c.label = "Legal Inquiries";
+      c.emoji = "⚖️";
+      c.description = "Legal questions, contracts, notices and compliance";
+      changed = true;
+    }
+  }
+  if (changed) scheduleSave();
+  return changed;
 }
 
 export function getConfiguredModmailGuilds(): GuildConfig[] {

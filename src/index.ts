@@ -11,10 +11,11 @@ import {
   handleModmailButton,
   handleModmailSelect,
   handleStaffThreadMessage,
+  ensureCategoryChannels,
   sweepDueTicketClosures,
   sweepSlaAndCloseWarnings,
 } from "./modmail";
-import { flushStore, getGuildConfig, initStore } from "./store";
+import { flushStore, getConfiguredModmailGuilds, getGuildConfig, initStore, migrateLegalCategory } from "./store";
 import { tooFast } from "./util";
 
 try {
@@ -59,6 +60,13 @@ client.once(Events.ClientReady, async (c) => {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
     if (DEV_GUILD_ID) {
       await rest.put(Routes.applicationGuildCommands(CLIENT_ID, DEV_GUILD_ID), { body });
+    }
+    // Keep existing servers in line with the current categories (Legal Inquiries rename, channel names).
+    for (const cfg of getConfiguredModmailGuilds()) {
+      const guild = c.guilds.cache.get(cfg.guildId);
+      if (!guild) continue;
+      migrateLegalCategory(cfg);
+      await ensureCategoryChannels(guild, cfg).catch((e) => console.error("Category setup failed:", e instanceof Error ? e.message : e));
     }
     console.log(`Ready as ${c.user.tag}. ${allCommands.size} global commands registered across ${c.guilds.cache.size} server(s).`);
     setInterval(() => void sweepDueTicketClosures(c).catch((e) => console.error("Sweep error:", e)), 30_000);

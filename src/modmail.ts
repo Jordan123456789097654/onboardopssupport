@@ -251,6 +251,12 @@ export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Pr
   for (const cat of cfg.modmailCategories) {
     const existing = cat.channelId ? guild.channels.cache.get(cat.channelId) : undefined;
     if (existing?.type === ChannelType.GuildText) {
+      // Keep names in line with the label, so renamed categories update in Discord too.
+      const wantChannel = `tickets-${slugOf(cat.label)}`;
+      const wantParent = `Modmail · ${cat.label}`.slice(0, 100);
+      if (existing.name !== wantChannel) await existing.setName(wantChannel).catch(() => undefined);
+      const parent = existing.parent;
+      if (parent && parent.name !== wantParent) await parent.setName(wantParent).catch(() => undefined);
       out.ready.push(cat.label);
       continue;
     }
@@ -414,8 +420,9 @@ export async function openTicket(
     });
   }
 
-  if (cfg.modmailLogChannelId) {
-    const logCh = guild.channels.cache.get(cfg.modmailLogChannelId) as TextChannel | undefined;
+  const openLogCh = (cat.channelId ? guild.channels.cache.get(cat.channelId) : undefined) ?? (cfg.modmailLogChannelId ? guild.channels.cache.get(cfg.modmailLogChannelId) : undefined);
+  if (openLogCh) {
+    const logCh = openLogCh as TextChannel;
     if (logCh?.type === ChannelType.GuildText) {
       await logCh
         .send({
@@ -767,8 +774,10 @@ export async function closeTicketNow(
     name: `ticket-${ticket.id}-${ticket.username.replace(/[^a-z0-9_-]/gi, "") || "user"}.txt`,
   });
 
-  if (cfg.modmailLogChannelId) {
-    const logCh = guild.channels.cache.get(cfg.modmailLogChannelId) as TextChannel | undefined;
+  const closeCat = cfg.modmailCategories.find((c) => c.id === ticket.categoryId);
+  const closeLogCh = (closeCat?.channelId ? guild.channels.cache.get(closeCat.channelId) : undefined) ?? (cfg.modmailLogChannelId ? guild.channels.cache.get(cfg.modmailLogChannelId) : undefined);
+  if (closeLogCh) {
+    const logCh = closeLogCh as TextChannel;
     if (logCh?.type === ChannelType.GuildText) {
       await logCh
         .send({
