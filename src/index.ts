@@ -18,7 +18,7 @@ import {
   sweepDueTicketClosures,
   sweepSlaAndCloseWarnings,
 } from "./modmail";
-import { flushStore, getConfiguredModmailGuilds, getGuildConfig, getTag, initStore, migrateLegalCategory, upsertTag, type Tag } from "./store";
+import { flushStore, getConfiguredModmailGuilds, getGuildConfig, getOpenTicketByThread, getTag, initStore, migrateLegalCategory, upsertTag, type Tag } from "./store";
 import { tooFast } from "./util";
 
 try {
@@ -121,7 +121,7 @@ client.on(Events.MessageCreate, async (msg) => {
       return;
     }
     if (msg.guild) {
-      if (msg.channel.isThread()) {
+      if (getOpenTicketByThread(msg.channelId)) {
         await handleStaffThreadMessage(client, msg);
       }
       await runAutomod(msg);

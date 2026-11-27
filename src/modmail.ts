@@ -12,7 +12,6 @@ import {
   type Message,
   type StringSelectMenuInteraction,
   type TextChannel,
-  type ThreadChannel,
   type User,
   Events,
   GuildBasedChannel,
@@ -265,6 +264,16 @@ async function grantAlwaysAccess(guild: Guild, channel: { permissionOverwrites: 
   }
 }
 
+/** Makes a category private: hidden from everyone, visible to the bot and the staff roles for that category. */
+async function lockCategory(guild: Guild, parent: { permissionOverwrites: { edit: (id: string, p: Record<string, boolean>) => Promise<unknown> } }, cfg: GuildConfig, cat: ModmailCategory): Promise<void> {
+  await parent.permissionOverwrites.edit(guild.id, { ViewChannel: false }).catch(() => undefined);
+  const roles = new Set([...alwaysAccessRoles(guild.id), cfg.modmailStaffRoleId ?? "", cat.staffRoleId ?? ""].filter(Boolean));
+  for (const roleId of roles) {
+    if (!guild.roles.cache.has(roleId)) continue;
+    await parent.permissionOverwrites.edit(roleId, { ViewChannel: true, ReadMessageHistory: true, SendMessages: true, SendMessagesInThreads: true }).catch(() => undefined);
+  }
+}
+
 export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Promise<{ created: string[]; ready: string[]; failed: string[] }> {
   const out = { created: [] as string[], ready: [] as string[], failed: [] as string[] };
   for (const cat of cfg.modmailCategories) {
@@ -278,6 +287,7 @@ export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Pr
       if (parent && parent.name !== wantParent) await parent.setName(wantParent).catch(() => undefined);
       await grantAlwaysAccess(guild, existing);
       if (existing.parent) await grantAlwaysAccess(guild, existing.parent);
+      if (existing.parent) await lockCategory(guild, existing.parent, cfg, cat);
       out.ready.push(cat.label);
       continue;
     }
@@ -302,6 +312,7 @@ export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Pr
       }
       await grantAlwaysAccess(guild, ch);
       await grantAlwaysAccess(guild, parent as unknown as { permissionOverwrites: { edit: (id: string, p: Record<string, boolean>) => Promise<unknown> } });
+      await lockCategory(guild, parent as unknown as { permissionOverwrites: { edit: (id: string, p: Record<string, boolean>) => Promise<unknown> } }, cfg, cat);
       cat.channelId = ch.id;
       out.created.push(cat.label);
     } catch (e) {
@@ -341,13 +352,16 @@ export async function openTicket(
 
   const nextNum = cfg.nextTicketNumber;
   const safeUser = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 18) || "user";
-  const threadName = `${cat.emoji || "📩"}-${safeUser}-${nextNum}`.slice(0, 95);
+  const channelName = `ticket-${nextNum}-${safeUser}`.toLowerCase().slice(0, 95);
 
-  const thread = await inbox.threads.create({
-    name: threadName,
-    autoArchiveDuration: 10080, // 7 days
+  // One channel per ticket, inside the category's Discord category, so it inherits the category's private permissions.
+  const thread = (await guild.channels.create({
+    name: channelName,
+    type: ChannelType.GuildText,
+    parent: inbox.parentId ?? undefined,
+    topic: `Ticket #${nextNum} · ${cat.label} · ${user.username}`.slice(0, 1000),
     reason: `Modmail ticket for ${user.username}`,
-  });
+  })) as TextChannel;
 
   const ticket = createTicketRecord({
     guildId: guild.id,
@@ -476,8 +490,8 @@ export async function relayUserMessageToTicket(client: Client, ticket: Ticket, m
   const guild = client.guilds.cache.get(ticket.guildId);
   if (!guild) return;
   const thread = (guild.channels.cache.get(ticket.threadId) ??
-    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
-  if (!thread || !thread.isThread()) {
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as TextChannel | null;
+  if (!thread || !thread.isTextBased()) {
     ticket.status = "closed";
     ticket.closedAt = Date.now();
     scheduleSave();
@@ -526,7 +540,7 @@ export async function relayUserMessageToTicket(client: Client, ticket: Ticket, m
 
 /** Handles staff typing directly in a Modmail ticket thread (when autoRelayThreadMessages is on). */
 export async function handleStaffThreadMessage(client: Client, msg: Message): Promise<void> {
-  if (msg.author.bot || !msg.guild || !msg.channel.isThread()) return;
+  if (msg.author.bot || !msg.guild || !msg.channel.isTextBased()) return;
   if (msg.content.startsWith("//") || msg.content.toLowerCase().startsWith("!note")) return;
 
   const ticket = getOpenTicketByThread(msg.channel.id);
@@ -605,7 +619,7 @@ export async function transferTicket(
 ): Promise<{ ok: boolean; message: string }> {
   const cfg = getGuildConfig(guild.id);
   const thread = (guild.channels.cache.get(ticket.threadId) ??
-    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as TextChannel | null;
 
   const changes: string[] = [];
   const pings: string[] = [];
@@ -620,7 +634,7 @@ export async function transferTicket(
     ticket.categoryEmoji = nextCat.emoji;
     changes.push(`Category → **${nextCat.emoji} ${nextCat.label}**`);
     if (nextCat.staffRoleId) pings.push(`<@&${nextCat.staffRoleId}>`);
-    if (thread?.isThread()) {
+    if (thread?.isTextBased()) {
       const safeUser = ticket.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 18) || "user";
       await thread.setName(`${nextCat.emoji || "📩"}-${safeUser}-${ticket.id}`.slice(0, 95)).catch(() => undefined);
     }
@@ -650,7 +664,7 @@ export async function transferTicket(
     content: `Transferred by ${opts.actor.username}: ${changes.join(", ")}${opts.reason ? ` (${opts.reason})` : ""}`,
   });
 
-  if (thread?.isThread()) {
+  if (thread?.isTextBased()) {
     const embed = new EmbedBuilder()
       .setColor(COLORS.blue)
       .setTitle(`${brandOf(guild, cfg).toUpperCase()} - TRANSFERRED`)
@@ -723,8 +737,8 @@ export async function resolveTicketWithDelay(
   }
 
   const thread = (guild.channels.cache.get(ticket.threadId) ??
-    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
-  if (thread?.isThread()) {
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as TextChannel | null;
+  if (thread?.isTextBased()) {
     const unix = Math.floor(ticket.closeAt / 1000);
     await thread
       .send({
@@ -831,8 +845,8 @@ export async function closeTicketNow(
   }
 
   const thread = (guild.channels.cache.get(ticket.threadId) ??
-    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
-  if (thread?.isThread()) {
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as TextChannel | null;
+  if (thread?.isTextBased()) {
     await thread
       .send({
         embeds: [
@@ -842,8 +856,8 @@ export async function closeTicketNow(
         ],
       })
       .catch(() => undefined);
-    await thread.setLocked(true).catch(() => undefined);
-    await thread.setArchived(true).catch(() => undefined);
+    await thread.permissionOverwrites.edit(guild.id, { SendMessages: false }).catch(() => undefined);
+    await thread.setName(`closed-${thread.name}`.slice(0, 95)).catch(() => undefined);
   }
 }
 
@@ -921,10 +935,10 @@ function lastMessageAt(ticket: Ticket, role: "user" | "staff"): number | null {
   return last || null;
 }
 
-async function ticketThreadOf(guild: Guild, ticket: Ticket): Promise<ThreadChannel | null> {
+async function ticketThreadOf(guild: Guild, ticket: Ticket): Promise<TextChannel | null> {
   const t = (guild.channels.cache.get(ticket.threadId) ??
-    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
-  return t?.isThread() ? t : null;
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as TextChannel | null;
+  return t?.type === ChannelType.GuildText ? t : null;
 }
 
 /** Asks the customer to accept closing. They get Accept and Reject buttons in their DM. */
@@ -1133,7 +1147,7 @@ export function inSupportHours(now = new Date()): boolean {
 }
 
 /** A short profile of the customer at the top of the ticket thread. */
-async function postUserInfo(guild: Guild, cfg: GuildConfig, thread: ThreadChannel, user: User): Promise<void> {
+async function postUserInfo(guild: Guild, cfg: GuildConfig, thread: TextChannel, user: User): Promise<void> {
   const tickets = getAllTickets(guild.id).filter((t) => t.userId === user.id);
   const before = Math.max(0, tickets.length - 1); // excludes the ticket that was just opened
   const warnings = getUserActiveWarnings(guild.id, user.id).length;
@@ -1152,7 +1166,7 @@ async function postUserInfo(guild: Guild, cfg: GuildConfig, thread: ThreadChanne
 }
 
 /** Tells the customer the team is away, and explains the support hours. */
-async function sendAwayNotice(guild: Guild, cfg: GuildConfig, user: User, thread: ThreadChannel): Promise<void> {
+async function sendAwayNotice(guild: Guild, cfg: GuildConfig, user: User, thread: TextChannel): Promise<void> {
   const brand = brandOf(guild, cfg);
   const text =
     cfg.awayMessage?.trim() ||

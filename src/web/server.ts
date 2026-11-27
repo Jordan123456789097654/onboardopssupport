@@ -1,6 +1,7 @@
 import cookieParser from "cookie-parser";
 import type { Client, GuildMember } from "discord.js";
 import express, { type Request, type Response } from "express";
+import { ensureCategoryChannels } from "../modmail";
 import {
   deleteTag,
   getAllGuildConfigs,
@@ -715,14 +716,25 @@ export function startWebServer(client: Client, opts: WebServerOptions = {}): exp
                   <div class="col-span-5">
                     <input type="text" name="cat_desc_${idx}" value="${escapeHtml(c.description)}" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white" placeholder="Description" />
                   </div>
-                  <div class="col-span-3">
+                  <div class="col-span-2">
                     <input type="text" name="cat_role_${idx}" value="${escapeHtml(c.staffRoleId || "")}" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white" placeholder="Ping Role ID" />
                   </div>
+                  <label class="col-span-1 flex items-center justify-center gap-1 text-[11px] text-rose-400">
+                    <input type="checkbox" name="cat_del_${idx}" value="1" /> Remove
+                  </label>
                 </div>
               `,
                 )
                 .join("")}
             </div>
+            <div class="mt-5 grid grid-cols-12 gap-2 items-center bg-[#12141a] p-3 rounded-xl border border-dashed border-gray-700">
+              <div class="col-span-12 text-xs font-semibold text-gray-300">Add a new category</div>
+              <div class="col-span-1"><input type="text" name="new_cat_emoji" class="w-full text-center bg-gray-900 border border-gray-700 rounded py-1 text-sm text-white" placeholder="🧾" /></div>
+              <div class="col-span-3"><input type="text" name="new_cat_label" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white" placeholder="Label, e.g. Billing" maxlength="60" /></div>
+              <div class="col-span-5"><input type="text" name="new_cat_desc" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white" placeholder="Short description shown in the DM menu" maxlength="100" /></div>
+              <div class="col-span-3"><input type="text" name="new_cat_role" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white" placeholder="Ping Role ID (optional)" /></div>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-2">Removing a category stops it appearing in the DM menu. Its Discord channels are not deleted, so you can delete them in Discord.</p>
           </div>
 
           <div class="flex justify-end pt-4 border-t border-gray-800">
@@ -758,6 +770,26 @@ export function startWebServer(client: Client, opts: WebServerOptions = {}): exp
       if (desc) cfg.modmailCategories[i].description = desc;
       cfg.modmailCategories[i].staffRoleId = role || null;
     }
+    // Remove ticked categories, but always keep at least one.
+    const kept = cfg.modmailCategories.filter((_, i) => !req.body[`cat_del_${i}`] || cfg.modmailCategories.length === 1);
+    cfg.modmailCategories = kept.length ? kept : cfg.modmailCategories;
+
+    // Add a new category if a label was typed.
+    const newLabel = req.body.new_cat_label?.trim();
+    if (newLabel) {
+      const id = `${newLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "category"}-${Date.now().toString(36)}`;
+      cfg.modmailCategories.push({
+        id,
+        label: newLabel.slice(0, 60),
+        emoji: req.body.new_cat_emoji?.trim() || "📩",
+        description: req.body.new_cat_desc?.trim() || "",
+        staffRoleId: req.body.new_cat_role?.trim() || null,
+        channelId: null,
+      });
+    }
+    // Set up Discord channels for any new category, using the bot.
+    const guildForChannels = client.guilds.cache.get(guildId);
+    if (guildForChannels) void ensureCategoryChannels(guildForChannels, cfg).catch(() => undefined);
 
     saveGuildConfig(cfg);
     res.redirect(`/dashboard/modmail?guild=${guildId}`);
