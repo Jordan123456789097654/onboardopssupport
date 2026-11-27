@@ -386,8 +386,8 @@ export async function openTicket(
     .setTitle("Ticket opened")
     .setDescription(
       [
-        `"Thanks for reaching out to **${brand}**!`,
-        `Your message is with our team and we'll reply right here as soon as we can."`,
+        `**Hello! Welcome to ${brand} Support.**`,
+        `Thanks for reaching out. Your message is with our team, and a member of staff will introduce themselves here as soon as they pick it up.`,
         "",
         `> Tip: the more detail you give us (screenshots, error messages, order info), the faster we can help.`,
       ].join("\n"),
@@ -844,6 +844,7 @@ export async function handleModmailButton(client: Client, i: ButtonInteraction):
     scheduleSave();
     await i.update({ components: [ticketControlRow(ticket.id, true)] });
     await i.followUp({ content: `Claimed by <@${i.user.id}>.` });
+    await sendClaimGreeting(client, i.guild, ticket, i.user, member?.displayName ?? i.user.username);
     return;
   }
 
@@ -1045,6 +1046,33 @@ export async function sweepSlaAndCloseWarnings(client: Client): Promise<void> {
         .catch(() => undefined);
     }
   }
+}
+
+/** "Hello! My name is …" to the customer when a staff member picks up their ticket. Anonymous mode uses the team name. */
+export async function sendClaimGreeting(client: Client, guild: Guild, ticket: Ticket, staff: User, staffName: string): Promise<void> {
+  const cfg = getGuildConfig(guild.id);
+  const brand = brandOf(guild, cfg);
+  const name = cfg.anonymousStaff ? `${brand} Support` : staffName;
+  const user = await client.users.fetch(ticket.userId).catch(() => null);
+  if (!user) return;
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.green)
+    .setAuthor({ name, iconURL: cfg.anonymousStaff ? guild.iconURL() ?? undefined : staff.displayAvatarURL() })
+    .setDescription(
+      [
+        `**Hello! My name is ${name}.**`,
+        `I'm picking up your ticket now, so you're in good hands. I've read your message and I'm working on it.`,
+        "",
+        "You can reply right here at any time, and I'll see it in this conversation.",
+      ].join("\n"),
+    )
+    .setFooter({ text: footerOf(guild, cfg), iconURL: guild.iconURL() ?? undefined })
+    .setTimestamp(new Date());
+  await user.send({ embeds: [embed] }).catch(() => undefined);
+  const thread = await ticketThreadOf(guild, ticket);
+  await thread
+    ?.send({ embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription(`👋 Greeted the customer as **${name}**.`)], allowedMentions: { parse: [] } })
+    .catch(() => undefined);
 }
 
 /* ---------------- Auto-Close Background Sweep ---------------- */
