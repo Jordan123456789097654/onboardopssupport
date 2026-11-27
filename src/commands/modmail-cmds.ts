@@ -1,4 +1,6 @@
 import { ChannelType, EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder, type TextChannel } from "discord.js";
+import { parseDuration as parseDur, formatDuration as fmtDur } from "../util";
+import { scheduleSave as saveTicket, type ScheduledReply } from "../store";
 import { closeTicketNow, ensureCategoryChannels, openTicket, requestCloseFromCustomer, resolveTicketWithDelay, sendStaffReply, transferTicket } from "../modmail";
 import {
   DEFAULT_CATEGORIES,
@@ -568,8 +570,110 @@ const contact: Command = {
   },
 };
 
+const onewayCommand: Command = {
+  json: new SlashCommandBuilder()
+    .setName("oneway")
+    .setDescription("Turn one-way mode on or off. On: the customer can read this ticket but not reply.")
+    .addBooleanOption((o) => o.setName("on").setDescription("true to turn it on, false to turn it off").setRequired(true))
+    .setDMPermission(false)
+    .toJSON(),
+  async run(i) {
+    const member = await i.guild!.members.fetch(i.user.id).catch(() => null);
+    if (!isStaffMember(member, i.guild!)) {
+      await i.reply({ content: "Only staff can change one-way mode.", ephemeral: true });
+      return;
+    }
+    const ticket = getOpenTicketByThread(i.channelId);
+    if (!ticket) {
+      await i.reply({ content: "Use `/oneway` inside an open Modmail ticket thread.", ephemeral: true });
+      return;
+    }
+    const on = i.options.getBoolean("on", true);
+    ticket.oneway = on;
+    saveTicket();
+    await i.reply({ content: on ? "One-way mode is on. The customer can read this ticket but can't reply." : "One-way mode is off. The customer can reply again." });
+  },
+};
+
+const snoozeCommand: Command = {
+  json: new SlashCommandBuilder()
+    .setName("snooze")
+    .setDescription("Pause the stale and no-reply alerts on this ticket")
+    .addStringOption((o) => o.setName("for").setDescription("How long, such as 30m, 2h or 1d. Use off to clear it.").setRequired(true).setMaxLength(12))
+    .setDMPermission(false)
+    .toJSON(),
+  async run(i) {
+    const member = await i.guild!.members.fetch(i.user.id).catch(() => null);
+    if (!isStaffMember(member, i.guild!)) {
+      await i.reply({ content: "Only staff can snooze tickets.", ephemeral: true });
+      return;
+    }
+    const ticket = getOpenTicketByThread(i.channelId);
+    if (!ticket) {
+      await i.reply({ content: "Use `/snooze` inside an open Modmail ticket thread.", ephemeral: true });
+      return;
+    }
+    const raw = i.options.getString("for", true).trim().toLowerCase();
+    if (raw === "off") {
+      ticket.snoozeUntil = null;
+      saveTicket();
+      await i.reply({ content: "Snooze cleared. Alerts are back on for this ticket." });
+      return;
+    }
+    const ms = parseDur(raw);
+    if (!ms) {
+      await i.reply({ content: "Use something like `30m`, `2h` or `1d`.", ephemeral: true });
+      return;
+    }
+    ticket.snoozeUntil = Date.now() + ms;
+    saveTicket();
+    await i.reply({ content: `Snoozed for ${fmtDur(ms)}. Alerts resume <t:${Math.floor(ticket.snoozeUntil / 1000)}:R>.` });
+  },
+};
+
+const scheduleCommand: Command = {
+  json: new SlashCommandBuilder()
+    .setName("schedule")
+    .setDescription("Queue a reply to the customer to send later")
+    .addStringOption((o) => o.setName("when").setDescription("When to send it, such as 2h, 1d or 3d").setRequired(true).setMaxLength(12))
+    .addStringOption((o) => o.setName("message").setDescription("What to send").setRequired(true).setMaxLength(1500))
+    .setDMPermission(false)
+    .toJSON(),
+  async run(i) {
+    const member = await i.guild!.members.fetch(i.user.id).catch(() => null);
+    if (!isStaffMember(member, i.guild!)) {
+      await i.reply({ content: "Only staff can schedule replies.", ephemeral: true });
+      return;
+    }
+    const ticket = getOpenTicketByThread(i.channelId);
+    if (!ticket) {
+      await i.reply({ content: "Use `/schedule` inside an open Modmail ticket thread.", ephemeral: true });
+      return;
+    }
+    const ms = parseDur(i.options.getString("when", true).trim().toLowerCase());
+    if (!ms) {
+      await i.reply({ content: "Use something like `2h`, `1d` or `3d`.", ephemeral: true });
+      return;
+    }
+    const at = Date.now() + ms;
+    const entry: ScheduledReply = {
+      id: Math.random().toString(36).slice(2, 10),
+      at,
+      body: i.options.getString("message", true),
+      staffId: i.user.id,
+      staffName: i.user.username,
+    };
+    ticket.scheduled = [...(ticket.scheduled ?? []), entry].slice(-20);
+    saveTicket();
+    await i.reply({ content: `Queued. It goes to the customer <t:${Math.floor(at / 1000)}:f> (<t:${Math.floor(at / 1000)}:R>).`, ephemeral: true });
+  },
+};
+
 export const modmailCommands: Command[] = [
   modmailConfig,
+  onewayCommand,
+  snoozeCommand,
+  scheduleCommand,
   modmailCategory,
   makeReplyCommand("reply"),
   makeReplyCommand("r"),

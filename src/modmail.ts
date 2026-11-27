@@ -14,6 +14,7 @@ import {
   type TextChannel,
   type ThreadChannel,
   type User,
+  Events,
 } from "discord.js";
 import {
   appendTicketMessage,
@@ -24,6 +25,8 @@ import {
   getOpenTicketByUser,
   getAllTickets,
   getTicketById,
+  getUserActiveWarnings,
+  type ScheduledReply,
   getTicketsDueForClose,
   scheduleSave,
   type GuildConfig,
@@ -396,6 +399,8 @@ export async function openTicket(
     .setTimestamp(new Date());
 
   await user.send({ embeds: [dmEmbed] }).catch(() => undefined);
+  await postUserInfo(guild, cfg, thread, user);
+  if (!inSupportHours()) await sendAwayNotice(guild, cfg, user, thread);
 
   if (initial && (initial.text || initial.files.length)) {
     const body = [initial.text, ...initial.files].filter(Boolean).join("\n");
@@ -457,6 +462,11 @@ export async function relayUserMessageToTicket(client: Client, ticket: Ticket, m
     ticket.closedAt = Date.now();
     scheduleSave();
     await msg.reply("Your previous ticket thread was removed. Send another message to open a new ticket.").catch(() => undefined);
+    return;
+  }
+
+  if (ticket.oneway) {
+    await msg.reply("This conversation is read-only right now. Our team will be in touch if they need anything from you.").catch(() => undefined);
     return;
   }
 
@@ -992,6 +1002,21 @@ export async function sweepSlaAndCloseWarnings(client: Client): Promise<void> {
     const guild = client.guilds.cache.get(ticket.guildId);
     if (!guild) continue;
 
+    // Scheduled replies go out even while the ticket is snoozed.
+    if (ticket.scheduled?.length) {
+      const due = ticket.scheduled.filter((s) => s.at <= now);
+      if (due.length) {
+        ticket.scheduled = ticket.scheduled.filter((s) => s.at > now);
+        scheduleSave();
+        for (const s of due) {
+          const staff = await client.users.fetch(s.staffId).catch(() => null);
+          if (staff) await sendStaffReply(client, guild, ticket, staff, s.body, [], getGuildConfig(guild.id).anonymousStaff);
+        }
+      }
+    }
+
+    if (ticket.snoozeUntil && ticket.snoozeUntil > now) continue;
+
     if (ticket.status === "open") {
       const lastUser = lastMessageAt(ticket, "user");
       const lastStaff = lastMessageAt(ticket, "staff");
@@ -1073,6 +1098,100 @@ export async function sendClaimGreeting(client: Client, guild: Guild, ticket: Ti
   await thread
     ?.send({ embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription(`👋 Greeted the customer as **${name}**.`)], allowedMentions: { parse: [] } })
     .catch(() => undefined);
+}
+
+/* ---------------- Customer info, away notice, edit/delete relay, close on leave ---------------- */
+
+const clip = (s: string, max = 900) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
+/** Support hours: Monday to Friday, 9 am to 5 pm Eastern. */
+export function inSupportHours(now = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hour12: false }).formatToParts(now);
+  const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  return !["Sat", "Sun"].includes(weekday) && hour >= 9 && hour < 17;
+}
+
+/** A short profile of the customer at the top of the ticket thread. */
+async function postUserInfo(guild: Guild, cfg: GuildConfig, thread: ThreadChannel, user: User): Promise<void> {
+  const tickets = getAllTickets(guild.id).filter((t) => t.userId === user.id);
+  const before = Math.max(0, tickets.length - 1); // excludes the ticket that was just opened
+  const warnings = getUserActiveWarnings(guild.id, user.id).length;
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.blue)
+    .setTitle("Customer info")
+    .setThumbnail(user.displayAvatarURL())
+    .addFields(
+      { name: "Account created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:D> (<t:${Math.floor(user.createdTimestamp / 1000)}:R>)`, inline: true },
+      { name: "Earlier tickets", value: String(before), inline: true },
+      { name: "Active warnings", value: String(warnings), inline: true },
+    )
+    .setFooter({ text: footerOf(guild, cfg) })
+    .setTimestamp(new Date());
+  await thread.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => undefined);
+}
+
+/** Tells the customer the team is away, and explains the support hours. */
+async function sendAwayNotice(guild: Guild, cfg: GuildConfig, user: User, thread: ThreadChannel): Promise<void> {
+  const brand = brandOf(guild, cfg);
+  const text =
+    cfg.awayMessage?.trim() ||
+    "Our team is away right now. Support hours are Monday to Friday, 9 am to 5 pm Eastern. Your message is saved, and we'll reply as soon as we're back.";
+  await user
+    .send({ embeds: [new EmbedBuilder().setColor(COLORS.amber).setTitle(`${brand} is away`).setDescription(text)] })
+    .catch(() => undefined);
+  await thread
+    .send({ embeds: [new EmbedBuilder().setColor(COLORS.amber).setDescription("🌙 Sent the away message. This ticket was opened outside support hours.")] })
+    .catch(() => undefined);
+}
+
+/** Customer-side events: edits and deletes in the DM are shown in the thread, and tickets close when the customer leaves the server. */
+export function registerModmailEvents(client: Client): void {
+  client.on(Events.MessageUpdate, async (oldMsg, newMsg) => {
+    try {
+      if (newMsg.guildId || newMsg.author?.bot || !newMsg.author) return;
+      const ticket = getOpenTicketByUser(newMsg.author.id);
+      if (!ticket) return;
+      const before = oldMsg.content ?? "(not saved before the edit)";
+      const after = newMsg.content ?? "(not saved)";
+      if (before === after) return;
+      const guild = client.guilds.cache.get(ticket.guildId);
+      if (!guild) return;
+      const thread = await ticketThreadOf(guild, ticket);
+      await thread
+        ?.send({ embeds: [new EmbedBuilder().setColor(COLORS.amber).setTitle("Customer edited a message").setDescription(`**Before:** ${clip(before)}\n**After:** ${clip(after)}`)], allowedMentions: { parse: [] } })
+        .catch(() => undefined);
+    } catch {
+      // Edit relay is best-effort.
+    }
+  });
+
+  client.on(Events.MessageDelete, async (msg) => {
+    try {
+      if (msg.guildId || msg.author?.bot || !msg.author) return;
+      const ticket = getOpenTicketByUser(msg.author.id);
+      if (!ticket) return;
+      const guild = client.guilds.cache.get(ticket.guildId);
+      if (!guild) return;
+      const thread = await ticketThreadOf(guild, ticket);
+      const text = msg.content ? clip(msg.content) : "(text not saved)";
+      await thread
+        ?.send({ embeds: [new EmbedBuilder().setColor(COLORS.red).setTitle("Customer deleted a message").setDescription(text)], allowedMentions: { parse: [] } })
+        .catch(() => undefined);
+    } catch {
+      // Delete relay is best-effort.
+    }
+  });
+
+  client.on(Events.GuildMemberRemove, async (member) => {
+    try {
+      const ticket = getOpenTicketByUser(member.id, member.guild.id);
+      if (!ticket) return;
+      await closeTicketNow(client, member.guild, ticket, null, { reason: "Customer left the server" });
+    } catch (e) {
+      console.error("Close-on-leave failed:", e instanceof Error ? e.message : e);
+    }
+  });
 }
 
 /* ---------------- Auto-Close Background Sweep ---------------- */

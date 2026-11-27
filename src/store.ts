@@ -45,6 +45,8 @@ export type GuildConfig = {
   autorole: AutoroleConfig;
   nextCaseNumber: number;
   nextTicketNumber: number;
+  /** Optional custom away message, shown outside support hours. */
+  awayMessage?: string | null;
 };
 
 export type TicketMessage = {
@@ -56,6 +58,8 @@ export type TicketMessage = {
   content: string;
   attachments?: string[];
 };
+
+export type ScheduledReply = { id: string; at: number; body: string; staffId: string; staffName: string };
 
 export type Ticket = {
   id: string;
@@ -82,6 +86,12 @@ export type Ticket = {
   closeWarnedAt?: number | null;
   /** When staff asked the customer to accept closing the ticket. */
   closeRequestedAt?: number | null;
+  /** One-way mode: the customer can read the thread but not reply. */
+  oneway?: boolean | null;
+  /** Pauses the stale and no-reply alerts until this time. */
+  snoozeUntil?: number | null;
+  /** Replies queued to send later. */
+  scheduled?: ScheduledReply[] | null;
   messages: TicketMessage[];
 };
 

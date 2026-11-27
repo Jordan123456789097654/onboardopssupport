@@ -7,6 +7,7 @@ import type { Command } from "./commands/types";
 import { utilityCommands } from "./commands/utility";
 import { startWebServer } from "./web/server";
 import { registerAuditLog } from "./audit-log";
+import { registerModmailEvents } from "./modmail";
 import { BUILTIN_TAGS } from "./builtin-tags";
 import {
   handleDirectMessage,
@@ -57,6 +58,7 @@ const client = new Client({
 
 startWebServer(client);
 registerAuditLog(client);
+registerModmailEvents(client);
 
 client.once(Events.ClientReady, async (c) => {
   try {

@@ -70,7 +70,7 @@ const tag: Command = {
     }
     const typed = i.options.getFocused().toLowerCase();
     const matches = getGuildTags(i.guildId)
-      .filter((t) => t.name.includes(typed) || (t.category?.toLowerCase().includes(typed) ?? false))
+      .filter((t) => t.name.includes(typed) || (t.category?.toLowerCase().includes(typed) ?? false) || t.content.toLowerCase().includes(typed))
       .slice(0, 25)
       .map((t) => ({
         name: t.category ? `${t.name} [${t.category}] (${t.uses} uses)` : `${t.name} (${t.uses} uses)`,
