@@ -12,6 +12,7 @@ import {
   handleModmailSelect,
   handleStaffThreadMessage,
   sweepDueTicketClosures,
+  sweepSlaAndCloseWarnings,
 } from "./modmail";
 import { flushStore, getGuildConfig, initStore } from "./store";
 import { tooFast } from "./util";
@@ -61,6 +62,7 @@ client.once(Events.ClientReady, async (c) => {
     }
     console.log(`Ready as ${c.user.tag}. ${allCommands.size} global commands registered across ${c.guilds.cache.size} server(s).`);
     setInterval(() => void sweepDueTicketClosures(c).catch((e) => console.error("Sweep error:", e)), 30_000);
+    setInterval(() => void sweepSlaAndCloseWarnings(c).catch((e) => console.error("SLA sweep error:", e)), 60_000);
   } catch (e) {
     console.error("Failed to register slash commands:", e instanceof Error ? e.message : e);
   }

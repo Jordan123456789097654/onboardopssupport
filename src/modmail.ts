@@ -22,6 +22,8 @@ import {
   getGuildConfig,
   getOpenTicketByThread,
   getOpenTicketByUser,
+  getAllTickets,
+  getTicketById,
   getTicketsDueForClose,
   scheduleSave,
   type GuildConfig,
@@ -611,6 +613,7 @@ export async function resolveTicketWithDelay(
 
   ticket.status = "resolving";
   ticket.closeAt = Date.now() + delayMs;
+  ticket.closeWarnedAt = null;
   scheduleSave();
 
   const user = await client.users.fetch(ticket.userId).catch(() => null);
@@ -700,7 +703,13 @@ export async function closeTicketNow(
     opts.reason ? `Reason: ${opts.reason}` : "",
     `Web Transcript: ${transcriptUrl}`,
     "------------------------------------------------------------",
-    ...ticket.messages.map((m) => `[${new Date(m.at).toISOString()}] [${m.role.toUpperCase()}] ${m.authorName}: ${m.content}`),
+    ...ticket.messages.flatMap((m) => {
+      const who = m.role === "user" ? "Customer" : m.role === "staff" ? "Staff" : "System";
+      return [
+        `[${new Date(m.at).toISOString()}] [${who}] ${m.authorName}: ${m.content}`,
+        ...(m.attachments ?? []).map((u) => `    Attachment: ${u}`),
+      ];
+    }),
   ]
     .filter(Boolean)
     .join("\n");
@@ -753,7 +762,10 @@ export async function closeTicketNow(
 /* ---------------- Staff Thread Buttons ---------------- */
 
 export async function handleModmailButton(client: Client, i: ButtonInteraction): Promise<void> {
-  if (!i.guild) return;
+  if (!i.guild) {
+    await handleCustomerTicketButton(client, i);
+    return;
+  }
   const [, action, ticketId] = i.customId.split(":");
   const member = await i.guild.members.fetch(i.user.id).catch(() => null);
   if (!isStaffMember(member, i.guild)) {
@@ -806,6 +818,174 @@ export async function handleModmailButton(client: Client, i: ButtonInteraction):
     await i.deferReply({ ephemeral: true });
     await closeTicketNow(client, i.guild, ticket, i.user);
     await i.editReply(`Ticket #${ticket.id} closed.`);
+  }
+}
+
+/* ---------------- Close requests, customer buttons, SLA and close warnings ---------------- */
+
+const SLA_MS = 30 * 60_000;
+const CLOSE_WARN_MS = 10 * 60_000;
+
+function lastMessageAt(ticket: Ticket, role: "user" | "staff"): number | null {
+  let last = 0;
+  for (const m of ticket.messages) if (m.role === role && m.at > last) last = m.at;
+  return last || null;
+}
+
+async function ticketThreadOf(guild: Guild, ticket: Ticket): Promise<ThreadChannel | null> {
+  const t = (guild.channels.cache.get(ticket.threadId) ??
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
+  return t?.isThread() ? t : null;
+}
+
+/** Asks the customer to accept closing. They get Accept and Reject buttons in their DM. */
+export async function requestCloseFromCustomer(
+  client: Client,
+  guild: Guild,
+  ticket: Ticket,
+  actor: User,
+  reason: string | null,
+): Promise<boolean> {
+  const cfg = getGuildConfig(guild.id);
+  const brand = brandOf(guild, cfg);
+  const user = await client.users.fetch(ticket.userId).catch(() => null);
+  if (!user) return false;
+  const lines = [
+    `**${actor.username}** from ${brand} wants to close this ticket.`,
+    "Click **Accept** to close it now, or **Reject** if you still need help.",
+    "",
+    "The messages in this conversation will be archived for future reference.",
+  ];
+  if (reason) lines.push("", `**Note from the team:** ${reason}`);
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.amber)
+    .setTitle("Can this ticket be closed?")
+    .setDescription(lines.join("\n"))
+    .setFooter({ text: `${brand} Support`, iconURL: guild.iconURL() ?? undefined })
+    .setTimestamp(new Date());
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`mmbtn:accept:${ticket.id}`).setLabel("Accept").setEmoji("✅").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`mmbtn:reject:${ticket.id}`).setLabel("Reject").setEmoji("❌").setStyle(ButtonStyle.Danger),
+  );
+  const sent = await user.send({ embeds: [embed], components: [row] }).catch(() => null);
+  if (!sent) return false;
+  ticket.closeRequestedAt = Date.now();
+  scheduleSave();
+  const thread = await ticketThreadOf(guild, ticket);
+  await thread
+    ?.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(COLORS.amber)
+          .setDescription(`Close request sent to the customer by <@${actor.id}>. Waiting for Accept or Reject. Use \`/close now:true\` to close straight away.`),
+      ],
+    })
+    .catch(() => undefined);
+  return true;
+}
+
+/** Buttons the customer presses in their DM: Accept or Reject a close request, or Keep open during an auto-close warning. */
+async function handleCustomerTicketButton(client: Client, i: ButtonInteraction): Promise<void> {
+  const [, action, ticketId] = i.customId.split(":");
+  const ticket = getTicketById(ticketId);
+  if (!ticket || ticket.userId !== i.user.id || ticket.status === "closed") {
+    await i.reply({ content: "This ticket is already closed.", ephemeral: true }).catch(() => undefined);
+    return;
+  }
+  const guild = client.guilds.cache.get(ticket.guildId);
+  if (!guild) {
+    await i.reply({ content: "That server is no longer available, so this ticket can't be changed.", ephemeral: true }).catch(() => undefined);
+    return;
+  }
+  if (action === "accept") {
+    await i.update({ components: [] }).catch(() => undefined);
+    await closeTicketNow(client, guild, ticket, i.user, { reason: "Closed at the customer's request" });
+    return;
+  }
+  if (action === "reject" || action === "keep") {
+    ticket.closeRequestedAt = null;
+    ticket.closeWarnedAt = null;
+    if (ticket.status === "resolving") {
+      ticket.status = "open";
+      ticket.closeAt = null;
+    }
+    scheduleSave();
+    await i.update({ components: [] }).catch(() => undefined);
+    await i.followUp({ content: "Thanks. Your ticket stays open. Reply here any time.", ephemeral: true }).catch(() => undefined);
+    const thread = await ticketThreadOf(guild, ticket);
+    const note = action === "reject" ? " (rejected the close request)" : "";
+    await thread
+      ?.send({ embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription(`🔄 The customer kept this ticket open${note}.`)] })
+      .catch(() => undefined);
+    return;
+  }
+  await i.reply({ content: "That button isn't valid.", ephemeral: true }).catch(() => undefined);
+}
+
+/**
+ * Every minute: (1) tell the team when a customer has waited 30 minutes with no staff reply,
+ * (2) warn the customer 10 minutes before an auto-close, with a Keep open button.
+ */
+export async function sweepSlaAndCloseWarnings(client: Client): Promise<void> {
+  const now = Date.now();
+  for (const ticket of getAllTickets()) {
+    if (ticket.status === "closed") continue;
+    const guild = client.guilds.cache.get(ticket.guildId);
+    if (!guild) continue;
+
+    if (ticket.status === "open") {
+      const lastUser = lastMessageAt(ticket, "user");
+      const lastStaff = lastMessageAt(ticket, "staff");
+      if (lastUser !== null && (lastStaff === null || lastStaff < lastUser)) {
+        const alreadyWarned = (ticket.slaWarnedAt ?? 0) >= lastUser;
+        if (!alreadyWarned && now - lastUser >= SLA_MS) {
+          ticket.slaWarnedAt = now;
+          scheduleSave();
+          const thread = await ticketThreadOf(guild, ticket);
+          await thread
+            ?.send({
+              embeds: [
+                new EmbedBuilder()
+                  .setColor(COLORS.amber)
+                  .setTitle("No staff reply yet")
+                  .setDescription(`The customer's last message was <t:${Math.floor(lastUser / 1000)}:R> and nobody has replied since.`),
+              ],
+              allowedMentions: { parse: [] },
+            })
+            .catch(() => undefined);
+        }
+      }
+    }
+
+    if (ticket.status === "resolving" && ticket.closeAt !== null && ticket.closeAt > now && !ticket.closeWarnedAt && ticket.closeAt - now <= CLOSE_WARN_MS) {
+      const cfg = getGuildConfig(guild.id);
+      const brand = brandOf(guild, cfg);
+      const user = await client.users.fetch(ticket.userId).catch(() => null);
+      if (user) {
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId(`mmbtn:keep:${ticket.id}`).setLabel("Keep ticket open").setStyle(ButtonStyle.Primary),
+        );
+        await user
+          .send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(COLORS.amber)
+                .setTitle("Your ticket closes soon")
+                .setDescription(
+                  `Your ${brand} ticket will close <t:${Math.floor(ticket.closeAt / 1000)}:R>. If you still need help, press **Keep ticket open** or just send a message, and it stays open.`,
+                ),
+            ],
+            components: [row],
+          })
+          .catch(() => undefined);
+      }
+      ticket.closeWarnedAt = now;
+      scheduleSave();
+      const thread = await ticketThreadOf(guild, ticket);
+      await thread
+        ?.send({ embeds: [new EmbedBuilder().setColor(COLORS.amber).setDescription("⏳ Warned the customer that this ticket closes in about 10 minutes.")] })
+        .catch(() => undefined);
+    }
   }
 }
 

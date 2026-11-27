@@ -1,5 +1,5 @@
 import { ChannelType, EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder, type TextChannel } from "discord.js";
-import { closeTicketNow, openTicket, resolveTicketWithDelay, sendStaffReply, transferTicket } from "../modmail";
+import { closeTicketNow, openTicket, requestCloseFromCustomer, resolveTicketWithDelay, sendStaffReply, transferTicket } from "../modmail";
 import {
   DEFAULT_CATEGORIES,
   getGuildConfig,
@@ -417,8 +417,9 @@ const resolve: Command = {
 const close: Command = {
   json: new SlashCommandBuilder()
     .setName("close")
-    .setDescription("Close this Modmail ticket immediately and archive the thread")
+    .setDescription("Ask the customer to accept closing this ticket (or close it now with now:true)")
     .addStringOption((o) => o.setName("reason").setDescription("Optional closing note").setMaxLength(400))
+    .addBooleanOption((o) => o.setName("now").setDescription("Close immediately without asking the customer"))
     .addBooleanOption((o) => o.setName("silent").setDescription("Close without sending a DM notice to the user"))
     .setDMPermission(false)
     .toJSON(),
@@ -434,10 +435,17 @@ const close: Command = {
       return;
     }
     await i.deferReply({ ephemeral: true });
-    await closeTicketNow(i.client, i.guild!, ticket, i.user, {
-      reason: i.options.getString("reason"),
-      silent: i.options.getBoolean("silent") ?? false,
-    });
+    const reason = i.options.getString("reason");
+    const silent = i.options.getBoolean("silent") ?? false;
+    const now = i.options.getBoolean("now") ?? false;
+    if (!now && !silent) {
+      const asked = await requestCloseFromCustomer(i.client, i.guild!, ticket, i.user, reason);
+      if (asked) {
+        await i.editReply(`Asked the customer to accept closing ticket #${ticket.id}. They can Accept or Reject it.`);
+        return;
+      }
+    }
+    await closeTicketNow(i.client, i.guild!, ticket, i.user, { reason, silent });
     await i.editReply(`Ticket #${ticket.id} closed.`);
   },
 };

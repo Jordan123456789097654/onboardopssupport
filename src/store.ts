@@ -74,6 +74,12 @@ export type Ticket = {
   closedById: string | null;
   closeReason?: string | null;
   transcriptUrl?: string | null;
+  /** When we last warned the team that the customer has waited 30 minutes without a reply. */
+  slaWarnedAt?: number | null;
+  /** When we last warned the customer that an auto-close is about to happen. Reset when the close time changes. */
+  closeWarnedAt?: number | null;
+  /** When staff asked the customer to accept closing the ticket. */
+  closeRequestedAt?: number | null;
   messages: TicketMessage[];
 };
 
