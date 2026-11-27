@@ -137,7 +137,7 @@ export const DEFAULT_AUTOROLE: AutoroleConfig = {
 const FILE_PATH = resolve(process.cwd(), ".data", "store.json");
 const DB_URL = process.env.DATABASE_URL?.trim() || "";
 
-let pool: Pool | null = null;
+let pool: pg.Pool | null = null;
 let data: StoreData = { guilds: {}, tickets: {}, cases: {}, tags: {} };
 let writeQueue: Promise<void> = Promise.resolve();
 let dirty = false;
@@ -194,45 +194,6 @@ async function loadFileStore() {
   } catch {
     data = { guilds: {}, tickets: {}, cases: {}, tags: {} };
   }
-}
-  if (DB_URL) {
-    pool = new Pool({
-      connectionString: DB_URL,
-      ssl: DB_URL.includes("localhost") || DB_URL.includes("127.0.0.1") ? undefined : { rejectUnauthorized: false },
-      max: 3,
-    });
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS public_bot_state (
-        id TEXT PRIMARY KEY,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-    const res = await pool.query<{ payload: StoreData }>("SELECT payload FROM public_bot_state WHERE id = 'main'");
-    if (res.rows[0]?.payload) {
-      data = {
-        guilds: res.rows[0].payload.guilds ?? {},
-        tickets: res.rows[0].payload.tickets ?? {},
-        cases: res.rows[0].payload.cases ?? {},
-        tags: res.rows[0].payload.tags ?? {},
-      };
-    }
-    return "postgres";
-  }
-
-  try {
-    const raw = await readFile(FILE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<StoreData>;
-    data = {
-      guilds: parsed.guilds ?? {},
-      tickets: parsed.tickets ?? {},
-      cases: parsed.cases ?? {},
-      tags: parsed.tags ?? {},
-    };
-  } catch {
-    data = { guilds: {}, tickets: {}, cases: {}, tags: {} };
-  }
-  return "file";
 }
 
 async function persistNow(): Promise<void> {
