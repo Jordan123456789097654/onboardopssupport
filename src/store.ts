@@ -144,6 +144,57 @@ let dirty = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
 export async function initStore(): Promise<"postgres" | "file"> {
+  // If DATABASE_URL looks like a placeholder (e.g., "base" or empty), fall back to file storage.
+  if (!DB_URL || DB_URL.includes("base")) {
+    console.warn("DATABASE_URL missing or placeholder – using file storage instead of PostgreSQL.");
+    await loadFileStore();
+    return "file";
+  }
+  try {
+    pool = new Pool({
+      connectionString: DB_URL,
+      ssl: DB_URL.includes("localhost") || DB_URL.includes("127.0.0.1") ? undefined : { rejectUnauthorized: false },
+      max: 3,
+    });
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS public_bot_state (
+        id TEXT PRIMARY KEY,
+        payload JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    const res = await pool.query<{ payload: StoreData }>("SELECT payload FROM public_bot_state WHERE id = 'main'");
+    if (res.rows[0]?.payload) {
+      data = {
+        guilds: res.rows[0].payload.guilds ?? {},
+        tickets: res.rows[0].payload.tickets ?? {},
+        cases: res.rows[0].payload.cases ?? {},
+        tags: res.rows[0].payload.tags ?? {},
+      };
+    }
+    return "postgres";
+  } catch (e) {
+    console.error("Failed to connect to PostgreSQL – falling back to file storage:", e instanceof Error ? e.message : e);
+    await loadFileStore();
+    return "file";
+  }
+}
+
+// Helper to load the JSON file store when we cannot use PostgreSQL.
+async function loadFileStore() {
+  try {
+    const raw = await readFile(FILE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<StoreData>;
+    data = {
+      guilds: parsed.guilds ?? {},
+      tickets: parsed.tickets ?? {},
+      cases: parsed.cases ?? {},
+      tags: parsed.tags ?? {},
+    };
+  } catch {
+    data = { guilds: {}, tickets: {}, cases: {}, tags: {} };
+  }
+}
   if (DB_URL) {
     pool = new Pool({
       connectionString: DB_URL,
