@@ -6,6 +6,7 @@ import { tagCommands } from "./commands/tags";
 import type { Command } from "./commands/types";
 import { utilityCommands } from "./commands/utility";
 import { startWebServer } from "./web/server";
+import { registerAuditLog } from "./audit-log";
 import {
   handleDirectMessage,
   handleModmailButton,
@@ -47,11 +48,14 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildInvites,
   ],
   partials: [Partials.Channel, Partials.Message, Partials.User],
 });
 
 startWebServer(client);
+registerAuditLog(client);
 
 client.once(Events.ClientReady, async (c) => {
   try {
