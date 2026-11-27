@@ -7,6 +7,7 @@ import type { Command } from "./commands/types";
 import { utilityCommands } from "./commands/utility";
 import { startWebServer } from "./web/server";
 import { registerAuditLog } from "./audit-log";
+import { BUILTIN_TAGS } from "./builtin-tags";
 import {
   handleDirectMessage,
   handleModmailButton,
@@ -16,7 +17,7 @@ import {
   sweepDueTicketClosures,
   sweepSlaAndCloseWarnings,
 } from "./modmail";
-import { flushStore, getConfiguredModmailGuilds, getGuildConfig, initStore, migrateLegalCategory } from "./store";
+import { flushStore, getConfiguredModmailGuilds, getGuildConfig, getTag, initStore, migrateLegalCategory, upsertTag, type Tag } from "./store";
 import { tooFast } from "./util";
 
 try {
@@ -70,6 +71,11 @@ client.once(Events.ClientReady, async (c) => {
       const guild = c.guilds.cache.get(cfg.guildId);
       if (!guild) continue;
       migrateLegalCategory(cfg);
+      // Save the built-in ticket tags for this server. A tag already saved with the same name is left alone.
+      for (const b of BUILTIN_TAGS) {
+        if (getTag(guild.id, b.name)) continue;
+        upsertTag({ guildId: guild.id, name: b.name, content: b.content, category: b.category, embed: false, authorId: c.user.id, uses: 0, createdAt: Date.now(), updatedAt: Date.now() } as unknown as Tag);
+      }
       await ensureCategoryChannels(guild, cfg).catch((e) => console.error("Category setup failed:", e instanceof Error ? e.message : e));
     }
     console.log(`Ready as ${c.user.tag}. ${allCommands.size} global commands registered across ${c.guilds.cache.size} server(s).`);
