@@ -83,7 +83,7 @@ client.once(Events.ClientReady, async (c) => {
       await ensureCategoryChannels(guild, cfg).catch((e) => console.error("Category setup failed:", e instanceof Error ? e.message : e));
     }
     // Status shown under the bot's name.
-    c.user.setPresence({ status: "idle", activities: [{ name: "your DMs | Message me for support", type: ActivityType.Watching }] });
+    c.user.setPresence({ status: "idle", activities: [{ name: "Custom Status", type: ActivityType.Custom, state: "🎫 DM me to open a support ticket" }] });
     console.log(`Ready as ${c.user.tag}. ${allCommands.size} global commands registered across ${c.guilds.cache.size} server(s).`);
     setInterval(() => void sweepDueTicketClosures(c).catch((e) => console.error("Sweep error:", e)), 30_000);
     setInterval(() => void sweepSlaAndCloseWarnings(c).catch((e) => console.error("SLA sweep error:", e)), 60_000);
