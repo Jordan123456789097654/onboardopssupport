@@ -213,7 +213,7 @@ const tag: Command = {
           await i.reply({ content: "Only staff can send tags in Modmail tickets.", ephemeral: true });
           return;
         }
-        await i.deferReply();
+        await i.deferReply({ ephemeral: true });
         const target = await i.client.users.fetch(ticket.userId).catch(() => null);
         const rendered = renderTagContent(t.content, i, target ? { id: target.id, username: target.username } : { id: ticket.userId, username: ticket.username }, ticket.id);
         const ok = await sendStaffReply(i.client, guild, ticket, i.user, rendered);
@@ -223,15 +223,7 @@ const tag: Command = {
         }
         t.uses++;
         scheduleSave();
-        await i.editReply({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(COLORS.green)
-              .setAuthor({ name: `${i.user.username} • Tag: ${t.name}`, iconURL: i.user.displayAvatarURL() })
-              .setDescription(rendered)
-              .setTimestamp(new Date()),
-          ],
-        });
+        await i.editReply({ content: "Sent to the customer." });
         return;
       }
 
@@ -240,17 +232,15 @@ const tag: Command = {
       t.uses++;
       scheduleSave();
 
-      if (t.embed) {
-        await i.reply({
-          content: mention ? `<@${mention.id}>` : undefined,
-          embeds: [new EmbedBuilder().setColor(COLORS.blue).setDescription(rendered)],
-          allowedMentions: mention ? { users: [mention.id] } : { parse: [] },
-        });
-      } else {
-        await i.reply({
-          content: mention ? `<@${mention.id}> ${rendered}` : rendered,
-          allowedMentions: mention ? { users: [mention.id] } : { parse: [] },
-        });
+      // Post the tag as a normal message in the channel, so it doesn't show as a command reply.
+      // Only a private confirmation is sent back to the person who ran it.
+      await i.reply({ content: "Sent.", ephemeral: true });
+      const channel = i.channel;
+      if (channel && channel.isSendable()) {
+        const body = t.embed
+          ? { content: mention ? `<@${mention.id}>` : undefined, embeds: [new EmbedBuilder().setColor(COLORS.blue).setDescription(rendered)] }
+          : { content: mention ? `<@${mention.id}> ${rendered}` : rendered };
+        await channel.send({ ...body, allowedMentions: mention ? { users: [mention.id] } : { parse: [] } });
       }
     }
   },

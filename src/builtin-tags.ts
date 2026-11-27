@@ -26,10 +26,10 @@ export const BUILTIN_TAGS: BuiltinTag[] = [
     category: "Account",
     content: `${S.blue} **Having trouble signing in?** We're sorry about that. Please try these steps in order:
 
-> **1.** Reset your password at onboardops.org/login. The reset link arrives by email within a few minutes.
+> **1.** Reset your password at https://onboardops.org/login. The reset link arrives by email within a few minutes.
 > **2.** Check your spam or junk folder for that email, and add our address to your contacts.
 > **3.** If you use a passkey, try again on the same device you set it up on.
-> **4.** Make sure your browser isn't blocking pop-ups or third-party cookies for onboardops.org.
+> **4.** Make sure your browser isn't blocking pop-ups or third-party cookies for https://onboardops.org.
 
 If none of that works, reply here with the email address you sign in with (don't send your password), and our team will look into your account. ${S.white}`,
   },
@@ -95,7 +95,7 @@ If anything about this is unclear, reply here and we'll explain it. ${S.purple}`
 > • **Correct your data:** you can change your name, nickname, and contact details yourself in Account settings.
 > • **Delete your data:** see the account deletion steps, or ask here.
 
-Our full Privacy Policy is at onboardops.org/legal/privacy. We can't give legal advice, so for anything beyond how OnboardOps handles data, please speak with your own adviser. ${S.lightPink}`,
+Our full Privacy Policy is at https://onboardops.org/legal/privacy. We can't give legal advice, so for anything beyond how OnboardOps handles data, please speak with your own adviser. ${S.lightPink}`,
   },
 
   // ----- Workspaces and setup -----
@@ -111,7 +111,7 @@ Here's the order that works best for most teams:
 > **3.** Invite your managers first, then the rest of the team.
 > **4.** Build one course or checklist, then assign it to a small group to test it.
 
-The two-minute tutorial at onboardops.org/tutorial walks through it step by step. ${S.white}`,
+The two-minute tutorial at https://onboardops.org/tutorial walks through it step by step. ${S.white}`,
   },
   {
     name: "addstaff",
@@ -200,7 +200,7 @@ If you'd like a checklist template to start from, let us know which kind of busi
 > • When you publish a new version, people are asked to sign it again.
 > • Each sign-off is recorded with the date, time, and version.
 
-Our free policy builder at onboardops.org/tools/policy-builder can help you draft one. Your policies should be checked by a qualified adviser before you rely on them. ${S.pink}`,
+Our free policy builder at https://onboardops.org/tools/policy-builder can help you draft one. Your policies should be checked by a qualified adviser before you rely on them. ${S.pink}`,
   },
 
   // ----- Shifts and daily operations -----
@@ -257,7 +257,7 @@ If you're getting too many alerts, reply here with the type, and we'll help you 
     category: "Security",
     content: `${S.orange} **Security questions**
 
-Our security overview is at onboardops.org/security, and a printable summary is at onboardops.org/security/summary. These cover how we encrypt data, control access, and keep audit records.
+Our security overview is at https://onboardops.org/security, and a printable summary is at https://onboardops.org/security/summary. These cover how we encrypt data, control access, and keep audit records.
 
 > • Please don't include any real records, passwords, or personal data in a ticket.
 > • To report a security problem, use the security contact listed on the security page. Don't post details in public channels.
@@ -269,7 +269,7 @@ We aim to be accurate about what we do and don't have in place. If you need a sp
     category: "Legal",
     content: `${S.blue} **Data Processing Addendum**
 
-If your organisation needs a signed data processing agreement, the standard addendum is published at onboardops.org/legal/data-processing.
+If your organisation needs a signed data processing agreement, the standard addendum is published at https://onboardops.org/legal/data-processing.
 
 > • Reply here with your organisation's name and who should sign.
 > • Our team will confirm the terms that apply to your account.
@@ -283,7 +283,7 @@ We can't negotiate legal terms in a ticket, but we can answer questions about ho
 
 OnboardOps is free during the beta. There's no credit card to start, and you don't need to do anything to keep your workspace.
 
-> • The beta terms are at onboardops.org/legal/beta-terms.
+> • The beta terms are at https://onboardops.org/legal/beta-terms.
 > • Any change to pricing will be posted in the changelog first, with time to decide.
 
 Questions about billing or pricing? Reply here, and we'll make sure the right person answers. ${S.purple}`,
@@ -318,7 +318,7 @@ There are two kinds of key:
 > • Choose the smallest set of permissions that works.
 > • Store keys in a secret manager or environment variables, never in code you share.
 
-The full guide, including rotation and the error codes you might see, is at onboardops.org/support/api-keys. ${S.lilac}`,
+The full guide, including rotation and the error codes you might see, is at https://onboardops.org/support/api-keys. ${S.lilac}`,
   },
   {
     name: "api",
@@ -330,7 +330,7 @@ The full guide, including rotation and the error codes you might see, is at onbo
 > • Requests are limited per minute, so back off and retry if you get a rate-limit response.
 > • Every error includes a request ID. Send it to us if you need help.
 
-The full endpoint list and examples are in the API reference at onboardops.org/support/api-reference. ${S.white}`,
+The full endpoint list and examples are in the API reference at https://onboardops.org/support/api-reference. ${S.white}`,
   },
 
   // ----- Bugs and feedback -----
@@ -355,7 +355,7 @@ Please don't include any passwords or personal records in the report. ${S.green}
 A few quick things to try:
 
 > • Refresh the page once, then wait a minute before trying again.
-> • Check the live status at status.onboardops.org in case we're already working on it.
+> • Check the live status at https://status.onboardops.org in case we're already working on it.
 > • Try a different browser or turn off extensions for a moment.
 > • Note the page and roughly the time, and send it to us.
 
@@ -372,7 +372,7 @@ To help us understand it, it would be great to know:
 > • **How often** do you run into it?
 > • **What do you do today** instead?
 
-You can also add your idea to the public roadmap at onboardops.org/roadmap. ${S.purple}`,
+You can also add your idea to the public roadmap at https://onboardops.org/roadmap. ${S.purple}`,
   },
 
   // ----- Team and general -----
@@ -396,7 +396,7 @@ We read every application. If there's a good fit, a member of our team will be i
 
 We're not able to give legal advice, and our team can't tell you how a law or contract applies to your situation. For that, please speak with a qualified adviser of your own.
 
-What we can help with is how OnboardOps works. Our legal documents are published at onboardops.org/legal, including:
+What we can help with is how OnboardOps works. Our legal documents are published at https://onboardops.org/legal, including:
 
 > • Terms of Service
 > • Privacy Policy
@@ -411,11 +411,11 @@ If a question is about a specific workspace's records or policies, the workspace
     category: "General",
     content: `${S.orange} **Checking in on the status of things?**
 
-Live status, incidents, and planned maintenance are all posted at **status.onboardops.org**. That's the best place to check first.
+Live status, incidents, and planned maintenance are all posted at **https://status.onboardops.org**. That's the best place to check first.
 
 > • If something isn't loading, look at the status page before you retry many times.
 > • Updates are posted there as soon as we confirm them.
-> • You can subscribe to email updates at onboardops.org/status-updates.
+> • You can subscribe to email updates at https://onboardops.org/status-updates.
 
 We appreciate your patience. ${S.green}`,
   },
@@ -471,7 +471,7 @@ Thanks for reaching out to {server}. If you need anything else, you can:
 
 > • Write back in this conversation at any time, and it reopens.
 > • Open a new ticket by messaging this bot in DMs.
-> • Check the help center at onboardops.org/support.
+> • Check the help center at https://onboardops.org/support.
 
 It was a pleasure helping you. ${S.lightPink}`,
   },
