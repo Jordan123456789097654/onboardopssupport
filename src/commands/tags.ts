@@ -6,7 +6,7 @@ import {
 } from "discord.js";
 import { sendStaffReply } from "../modmail";
 import { deleteTag, getGuildTags, getOpenTicketByThread, getTag, scheduleSave, upsertTag, type Tag } from "../store";
-import { builtinTagByName } from "../builtin-tags";
+import { BUILTIN_TAGS, builtinTagByName } from "../builtin-tags";
 import { COLORS, isStaffMember } from "../util";
 import type { Command } from "./types";
 
@@ -69,11 +69,17 @@ const tag: Command = {
       return;
     }
     const typed = i.options.getFocused().toLowerCase();
-    const matches = getGuildTags(i.guildId)
+    // Saved server tags first, then built-in tags that aren't saved yet, so the list is never missing one.
+    const saved = getGuildTags(i.guildId);
+    const savedNames = new Set(saved.map((t) => t.name));
+    const builtins = BUILTIN_TAGS.filter((b) => !savedNames.has(b.name)).map((b) => ({ name: b.name, category: b.category, content: b.content, uses: 0 }));
+    const all = [...saved.map((t) => ({ name: t.name, category: t.category, content: t.content, uses: t.uses })), ...builtins];
+    const matches = all
       .filter((t) => t.name.includes(typed) || (t.category?.toLowerCase().includes(typed) ?? false) || t.content.toLowerCase().includes(typed))
+      .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, 25)
       .map((t) => ({
-        name: t.category ? `${t.name} [${t.category}] (${t.uses} uses)` : `${t.name} (${t.uses} uses)`,
+        name: (t.category ? `${t.name} [${t.category}]` : t.name).slice(0, 100),
         value: t.name,
       }));
     await i.respond(matches).catch(() => undefined);
