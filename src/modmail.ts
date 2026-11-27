@@ -1,0 +1,826 @@
+import {
+  ActionRowBuilder,
+  AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  EmbedBuilder,
+  StringSelectMenuBuilder,
+  type ButtonInteraction,
+  type Client,
+  type Guild,
+  type Message,
+  type StringSelectMenuInteraction,
+  type TextChannel,
+  type ThreadChannel,
+  type User,
+} from "discord.js";
+import {
+  appendTicketMessage,
+  createTicketRecord,
+  getConfiguredModmailGuilds,
+  getGuildConfig,
+  getOpenTicketByThread,
+  getOpenTicketByUser,
+  getTicketsDueForClose,
+  scheduleSave,
+  type GuildConfig,
+  type ModmailCategory,
+  type Ticket,
+} from "./store";
+import { COLORS, formatDuration, isStaffMember } from "./util";
+
+const pendingInitialText = new Map<string, { text: string; files: string[]; at: number }>();
+const pendingPrompts = new Map<string, number>();
+
+function cleanupPending() {
+  const cutoff = Date.now() - 15 * 60_000;
+  for (const [k, v] of pendingInitialText) if (v.at < cutoff) pendingInitialText.delete(k);
+  for (const [k, at] of pendingPrompts) if (at < cutoff) pendingPrompts.delete(k);
+}
+
+const brandOf = (guild: Guild, cfg: GuildConfig) => cfg.brandName?.trim() || guild.name;
+const footerOf = (guild: Guild, cfg: GuildConfig) => cfg.brandFooter?.trim() || `${brandOf(guild, cfg)} | Support`;
+
+function ticketControlRow(ticketId: string, claimed: boolean) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`mmbtn:claim:${ticketId}`)
+      .setLabel(claimed ? "Claimed" : "Claim")
+      .setStyle(claimed ? ButtonStyle.Success : ButtonStyle.Primary)
+      .setDisabled(claimed),
+    new ButtonBuilder().setCustomId(`mmbtn:transfer:${ticketId}`).setLabel("Transfer").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`mmbtn:resolve:${ticketId}`).setLabel("Resolve (2h)").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`mmbtn:close:${ticketId}`).setLabel("Close Now").setStyle(ButtonStyle.Danger),
+  );
+}
+
+function buildCategorySelect(guildId: string, nonce: string, categories: ModmailCategory[]) {
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`mm:cat:${guildId}:${nonce}`)
+      .setPlaceholder("Select an option to contact the staff team...")
+      .addOptions(
+        categories.slice(0, 25).map((c) => ({
+          label: c.label.slice(0, 100),
+          description: (c.description || "Contact staff").slice(0, 100),
+          value: c.id.slice(0, 100),
+          emoji: c.emoji || undefined,
+        })),
+      ),
+  );
+}
+
+async function findMutualConfiguredGuilds(client: Client, userId: string): Promise<{ guild: Guild; cfg: GuildConfig }[]> {
+  const configured = getConfiguredModmailGuilds();
+  const out: { guild: Guild; cfg: GuildConfig }[] = [];
+  for (const cfg of configured) {
+    const guild = client.guilds.cache.get(cfg.guildId);
+    if (!guild) continue;
+    const member = guild.members.cache.get(userId) ?? (await guild.members.fetch(userId).catch(() => null));
+    if (member) out.push({ guild, cfg });
+  }
+  return out;
+}
+
+/* ---------------- Incoming DM from a user ---------------- */
+
+export async function handleDirectMessage(client: Client, msg: Message): Promise<void> {
+  if (msg.author.bot || msg.channel.type !== ChannelType.DM) return;
+  cleanupPending();
+
+  const existing = getOpenTicketByUser(msg.author.id);
+  if (existing) {
+    await relayUserMessageToTicket(client, existing, msg);
+    return;
+  }
+
+  // Prevent spam opening multiple menus within a few seconds
+  const lastPrompt = pendingPrompts.get(msg.author.id) ?? 0;
+  if (Date.now() - lastPrompt < 4000) return;
+
+  const mutual = await findMutualConfiguredGuilds(client, msg.author.id);
+  if (mutual.length === 0) {
+    await msg.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(COLORS.amber)
+          .setDescription("Modmail is not configured on any server we share yet. Ask a server admin to run `/modmail-config channel` first."),
+      ],
+    });
+    return;
+  }
+
+  const nonce = Math.random().toString(36).slice(2, 10);
+  const files = [...msg.attachments.values()].map((a) => a.url);
+  if (msg.content.trim() || files.length) {
+    pendingInitialText.set(`${msg.author.id}:${nonce}`, { text: msg.content.trim(), files, at: Date.now() });
+  }
+  pendingPrompts.set(msg.author.id, Date.now());
+
+  if (mutual.length === 1) {
+    const { guild, cfg } = mutual[0];
+    if (cfg.blacklistedUserIds.includes(msg.author.id)) {
+      await msg.reply({
+        embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription(`You are currently blocked from opening Modmail tickets in **${brandOf(guild, cfg)}**.`)],
+      });
+      return;
+    }
+    await msg.channel.send({
+      embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription("Please select an option.")],
+      components: [buildCategorySelect(guild.id, nonce, cfg.modmailCategories)],
+    });
+    return;
+  }
+
+  const guildRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`mm:guild:${nonce}`)
+      .setPlaceholder("Select a server to contact...")
+      .addOptions(
+        mutual.slice(0, 25).map(({ guild, cfg }) => ({
+          label: brandOf(guild, cfg).slice(0, 100),
+          description: `Open a support ticket in ${guild.name}`.slice(0, 100),
+          value: guild.id,
+        })),
+      ),
+  );
+
+  await msg.channel.send({
+    embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription("Please select a server to contact.")],
+    components: [guildRow],
+  });
+}
+
+/* ---------------- DM Select Menus ---------------- */
+
+export async function handleModmailSelect(client: Client, i: StringSelectMenuInteraction): Promise<void> {
+  const parts = i.customId.split(":");
+  const kind = parts[1];
+
+  if (kind === "guild") {
+    const nonce = parts[2];
+    const guildId = i.values[0];
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      await i.update({ embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription("That server is no longer available.")], components: [] });
+      return;
+    }
+    const cfg = getGuildConfig(guild.id);
+    if (cfg.blacklistedUserIds.includes(i.user.id)) {
+      await i.update({
+        embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription(`You are currently blocked from opening Modmail tickets in **${brandOf(guild, cfg)}**.`)],
+        components: [],
+      });
+      return;
+    }
+    await i.update({
+      embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription("Please select an option.")],
+      components: [buildCategorySelect(guild.id, nonce, cfg.modmailCategories)],
+    });
+    return;
+  }
+
+  if (kind === "cat") {
+    const guildId = parts[2];
+    const nonce = parts[3];
+    const catId = i.values[0];
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      await i.update({ embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription("That server is no longer available.")], components: [] });
+      return;
+    }
+    const cfg = getGuildConfig(guild.id);
+    const cat = cfg.modmailCategories.find((c) => c.id === catId) ?? cfg.modmailCategories[0];
+    if (!cat) {
+      await i.update({ embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription("No Modmail categories are configured.")], components: [] });
+      return;
+    }
+
+    const existing = getOpenTicketByUser(i.user.id, guild.id);
+    if (existing) {
+      await i.update({
+        embeds: [new EmbedBuilder().setColor(COLORS.amber).setDescription(`You already have an open ticket (**#${existing.id}**). Just send your message here!`)],
+        components: [],
+      });
+      return;
+    }
+
+    await i.update({
+      embeds: [new EmbedBuilder().setColor(COLORS.green).setDescription(`You selected: ${cat.label}`)],
+      components: [],
+    });
+
+    const initial = pendingInitialText.get(`${i.user.id}:${nonce}`);
+    pendingInitialText.delete(`${i.user.id}:${nonce}`);
+    await openTicket(guild, cfg, i.user, cat, initial);
+    return;
+  }
+
+  if (kind === "transfer") {
+    const ticketId = parts[2];
+    if (!i.guild) return;
+    const member = await i.guild.members.fetch(i.user.id).catch(() => null);
+    if (!isStaffMember(member, i.guild)) {
+      await i.reply({ content: "Only staff can transfer tickets.", ephemeral: true });
+      return;
+    }
+    const ticket = getOpenTicketByThread(i.channelId);
+    if (!ticket || ticket.id !== ticketId) {
+      await i.reply({ content: "This ticket is no longer open.", ephemeral: true });
+      return;
+    }
+    const catId = i.values[0];
+    const res = await transferTicket(i.guild, ticket, { categoryId: catId, actor: i.user });
+    await i.update({ content: res.message, components: [] });
+  }
+}
+
+/* ---------------- Open Ticket ---------------- */
+
+export async function openTicket(
+  guild: Guild,
+  cfg: GuildConfig,
+  user: User,
+  cat: ModmailCategory,
+  initial?: { text: string; files: string[] },
+): Promise<Ticket | null> {
+  const inbox = cfg.modmailChannelId
+    ? (guild.channels.cache.get(cfg.modmailChannelId) as TextChannel | undefined)
+    : undefined;
+  if (!inbox || inbox.type !== ChannelType.GuildText) {
+    await user.send({
+      embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription("Modmail inbox channel is missing or invalid. Please contact a server admin.")],
+    }).catch(() => undefined);
+    return null;
+  }
+
+  const brand = brandOf(guild, cfg);
+  const icon = guild.iconURL() ?? undefined;
+  const member = await guild.members.fetch(user.id).catch(() => null);
+
+  const nextNum = cfg.nextTicketNumber;
+  const safeUser = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 18) || "user";
+  const threadName = `${cat.emoji || "📩"}-${safeUser}-${nextNum}`.slice(0, 95);
+
+  const thread = await inbox.threads.create({
+    name: threadName,
+    autoArchiveDuration: 10080, // 7 days
+    reason: `Modmail ticket for ${user.username}`,
+  });
+
+  const ticket = createTicketRecord({
+    guildId: guild.id,
+    userId: user.id,
+    username: user.username,
+    userAvatar: user.displayAvatarURL(),
+    threadId: thread.id,
+    parentChannelId: inbox.id,
+    categoryId: cat.id,
+    categoryLabel: cat.label,
+    categoryEmoji: cat.emoji,
+    claimedById: null,
+    status: "open",
+    closeAt: null,
+    createdAt: Date.now(),
+    closedAt: null,
+    closedById: null,
+    messages: [],
+  });
+
+  const roles = member
+    ? [...member.roles.cache.values()]
+        .filter((r) => r.id !== guild.id)
+        .sort((a, b) => b.position - a.position)
+        .slice(0, 8)
+        .map((r) => r.toString())
+        .join(" ") || "None"
+    : "Not in server";
+
+  const staffEmbed = new EmbedBuilder()
+    .setColor(COLORS.green)
+    .setAuthor({ name: `${user.username} (${user.id})`, iconURL: user.displayAvatarURL() })
+    .setTitle(`Ticket #${ticket.id} — ${cat.emoji} ${cat.label}`)
+    .setDescription(
+      [
+        `Type directly in this thread (or use \`/reply\`) to message the user.`,
+        `Prefix with \`//\` for internal staff notes, or use \`/note\`, \`/tag send\`, \`/transfer\`, \`/resolve\`, \`/close\`.`,
+      ].join("\n"),
+    )
+    .addFields(
+      { name: "User", value: `<@${user.id}>`, inline: true },
+      { name: "Category", value: `${cat.emoji} ${cat.label}`, inline: true },
+      { name: "Account Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true },
+      { name: "Joined Server", value: member?.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>` : "Unknown", inline: true },
+      { name: "Roles", value: roles },
+    )
+    .setTimestamp(new Date());
+
+  const pingRoleId = cat.staffRoleId || cfg.modmailStaffRoleId;
+  await thread.send({
+    content: pingRoleId ? `<@&${pingRoleId}> New Modmail ticket opened.` : undefined,
+    embeds: [staffEmbed],
+    components: [ticketControlRow(ticket.id, false)],
+  });
+
+  // DM confirmation embed matching Screenshot 1
+  const dmEmbed = new EmbedBuilder()
+    .setColor(COLORS.green)
+    .setTitle("Ticket opened")
+    .setDescription(
+      [
+        `"Thanks for reaching out to **${brand}**!`,
+        `Your message is with our team and we'll reply right here as soon as we can."`,
+        "",
+        `> Tip: the more detail you give us (screenshots, error messages, order info), the faster we can help.`,
+      ].join("\n"),
+    )
+    .setFooter({ text: footerOf(guild, cfg), iconURL: icon })
+    .setTimestamp(new Date());
+
+  await user.send({ embeds: [dmEmbed] }).catch(() => undefined);
+
+  if (initial && (initial.text || initial.files.length)) {
+    const body = [initial.text, ...initial.files].filter(Boolean).join("\n");
+    appendTicketMessage(ticket, {
+      at: Date.now(),
+      authorId: user.id,
+      authorName: user.username,
+      authorAvatar: user.displayAvatarURL(),
+      role: "user",
+      content: initial.text || (initial.files.length ? "*Sent attachment(s)*" : ""),
+      attachments: initial.files,
+    });
+    const userMsgEmbed = new EmbedBuilder()
+      .setColor(COLORS.blue)
+      .setAuthor({ name: user.username, iconURL: user.displayAvatarURL() })
+      .setDescription(initial.text || "*Attachment(s) sent*")
+      .setFooter({ text: `Ticket #${ticket.id} • ${cat.label}` })
+      .setTimestamp(new Date());
+    await thread.send({
+      embeds: [userMsgEmbed],
+      files: initial.files.slice(0, 5),
+    });
+  }
+
+  if (cfg.modmailLogChannelId) {
+    const logCh = guild.channels.cache.get(cfg.modmailLogChannelId) as TextChannel | undefined;
+    if (logCh?.type === ChannelType.GuildText) {
+      await logCh
+        .send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(COLORS.green)
+              .setTitle(`Ticket #${ticket.id} Opened`)
+              .addFields(
+                { name: "User", value: `${user.username} (<@${user.id}>)`, inline: true },
+                { name: "Category", value: `${cat.emoji} ${cat.label}`, inline: true },
+                { name: "Thread", value: `<#${thread.id}>`, inline: true },
+              )
+              .setTimestamp(new Date()),
+          ],
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  return ticket;
+}
+
+/* ---------------- Message Relays ---------------- */
+
+export async function relayUserMessageToTicket(client: Client, ticket: Ticket, msg: Message): Promise<void> {
+  const guild = client.guilds.cache.get(ticket.guildId);
+  if (!guild) return;
+  const thread = (guild.channels.cache.get(ticket.threadId) ??
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
+  if (!thread || !thread.isThread()) {
+    ticket.status = "closed";
+    ticket.closedAt = Date.now();
+    scheduleSave();
+    await msg.reply("Your previous ticket thread was removed. Send another message to open a new ticket.").catch(() => undefined);
+    return;
+  }
+
+  if (ticket.status === "resolving" && ticket.closeAt !== null) {
+    ticket.status = "open";
+    ticket.closeAt = null;
+    scheduleSave();
+    await thread
+      .send({
+        embeds: [new EmbedBuilder().setColor(COLORS.amber).setDescription(`🔄 **Auto-close cancelled** — <@${msg.author.id}> sent a new message.`)],
+      })
+      .catch(() => undefined);
+  }
+
+  const files = [...msg.attachments.values()].map((a) => a.url);
+  const body = [msg.content.trim(), ...files].filter(Boolean).join("\n") || "*Empty message*";
+  appendTicketMessage(ticket, {
+    at: Date.now(),
+    authorId: msg.author.id,
+    authorName: msg.author.username,
+    authorAvatar: msg.author.displayAvatarURL(),
+    role: "user",
+    content: msg.content.trim() || (files.length ? "*Sent attachment(s)*" : ""),
+    attachments: files,
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.blue)
+    .setAuthor({ name: msg.author.username, iconURL: msg.author.displayAvatarURL() })
+    .setDescription(msg.content.trim() || "*Attachment(s) sent*")
+    .setFooter({ text: `Ticket #${ticket.id} • ${ticket.categoryLabel}` })
+    .setTimestamp(new Date());
+
+  await thread.send({ embeds: [embed], files: files.slice(0, 5) }).catch(() => undefined);
+  await msg.react("✅").catch(() => undefined);
+}
+
+/** Handles staff typing directly in a Modmail ticket thread (when autoRelayThreadMessages is on). */
+export async function handleStaffThreadMessage(client: Client, msg: Message): Promise<void> {
+  if (msg.author.bot || !msg.guild || !msg.channel.isThread()) return;
+  if (msg.content.startsWith("//") || msg.content.toLowerCase().startsWith("!note")) return;
+
+  const ticket = getOpenTicketByThread(msg.channel.id);
+  if (!ticket) return;
+
+  const cfg = getGuildConfig(msg.guild.id);
+  if (!cfg.autoRelayThreadMessages) return;
+
+  const member = msg.member ?? (await msg.guild.members.fetch(msg.author.id).catch(() => null));
+  if (!isStaffMember(member, msg.guild)) return;
+
+  const files = [...msg.attachments.values()].map((a) => a.url);
+  if (!msg.content.trim() && files.length === 0) return;
+
+  const ok = await sendStaffReply(client, msg.guild, ticket, msg.author, msg.content.trim(), files, cfg.anonymousStaff);
+  if (ok) await msg.react("✅").catch(() => undefined);
+  else await msg.react("❌").catch(() => undefined);
+}
+
+/** Sends a staff reply embed to the user's DM (matching Screenshot 2). */
+export async function sendStaffReply(
+  client: Client,
+  guild: Guild,
+  ticket: Ticket,
+  staff: User,
+  text: string,
+  files: string[] = [],
+  anonymous = false,
+): Promise<boolean> {
+  const cfg = getGuildConfig(guild.id);
+  const brand = brandOf(guild, cfg);
+  const icon = guild.iconURL() ?? undefined;
+  const user = await client.users.fetch(ticket.userId).catch(() => null);
+  if (!user) return false;
+
+  const dmEmbed = new EmbedBuilder()
+    .setColor(COLORS.green)
+    .setAuthor({
+      name: anonymous ? `${brand} Support` : staff.username,
+      iconURL: anonymous ? icon : staff.displayAvatarURL(),
+    })
+    .setDescription(text || "*Attachment(s) sent*")
+    .setFooter({ text: `${brand} Support`, iconURL: icon })
+    .setTimestamp(new Date());
+
+  try {
+    await user.send({ embeds: [dmEmbed], files: files.slice(0, 5) });
+    appendTicketMessage(ticket, {
+      at: Date.now(),
+      authorId: staff.id,
+      authorName: anonymous ? `${brand} Support` : staff.username,
+      authorAvatar: anonymous ? (icon ?? null) : staff.displayAvatarURL(),
+      role: "staff",
+      content: text || (files.length ? "*Sent attachment(s)*" : ""),
+      attachments: files,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ---------------- Transfer, Resolve (delayed), Close ---------------- */
+
+export async function transferTicket(
+  guild: Guild,
+  ticket: Ticket,
+  opts: {
+    categoryId?: string | null;
+    staffUser?: User | null;
+    roleId?: string | null;
+    reason?: string | null;
+    notifyUser?: boolean;
+    actor: User;
+  },
+): Promise<{ ok: boolean; message: string }> {
+  const cfg = getGuildConfig(guild.id);
+  const thread = (guild.channels.cache.get(ticket.threadId) ??
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
+
+  const changes: string[] = [];
+  const pings: string[] = [];
+
+  if (opts.categoryId) {
+    const nextCat = cfg.modmailCategories.find(
+      (c) => c.id.toLowerCase() === opts.categoryId!.toLowerCase() || c.label.toLowerCase() === opts.categoryId!.toLowerCase(),
+    );
+    if (!nextCat) return { ok: false, message: `Unknown category \`${opts.categoryId}\`.` };
+    ticket.categoryId = nextCat.id;
+    ticket.categoryLabel = nextCat.label;
+    ticket.categoryEmoji = nextCat.emoji;
+    changes.push(`Category → **${nextCat.emoji} ${nextCat.label}**`);
+    if (nextCat.staffRoleId) pings.push(`<@&${nextCat.staffRoleId}>`);
+    if (thread?.isThread()) {
+      const safeUser = ticket.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 18) || "user";
+      await thread.setName(`${nextCat.emoji || "📩"}-${safeUser}-${ticket.id}`.slice(0, 95)).catch(() => undefined);
+    }
+  }
+
+  if (opts.staffUser) {
+    ticket.claimedById = opts.staffUser.id;
+    changes.push(`Assigned to <@${opts.staffUser.id}>`);
+    pings.push(`<@${opts.staffUser.id}>`);
+  }
+
+  if (opts.roleId) {
+    changes.push(`Escalated to <@&${opts.roleId}>`);
+    pings.push(`<@&${opts.roleId}>`);
+  }
+
+  if (changes.length === 0) {
+    return { ok: false, message: "Specify a category, staff member, or role to transfer this ticket to." };
+  }
+
+  scheduleSave();
+  appendTicketMessage(ticket, {
+    at: Date.now(),
+    authorId: opts.actor.id,
+    authorName: opts.actor.username,
+    role: "system",
+    content: `Transferred by ${opts.actor.username}: ${changes.join(", ")}${opts.reason ? ` (${opts.reason})` : ""}`,
+  });
+
+  if (thread?.isThread()) {
+    const embed = new EmbedBuilder()
+      .setColor(COLORS.blue)
+      .setTitle("Ticket Transferred")
+      .setDescription(changes.join("\n"))
+      .addFields(
+        { name: "Transferred by", value: `<@${opts.actor.id}>`, inline: true },
+        ...(opts.reason ? [{ name: "Reason", value: opts.reason, inline: true }] : []),
+      )
+      .setTimestamp(new Date());
+    await thread.send({ content: pings.length ? pings.join(" ") : undefined, embeds: [embed] }).catch(() => undefined);
+  }
+
+  if (opts.notifyUser) {
+    const user = await guild.client.users.fetch(ticket.userId).catch(() => null);
+    if (user) {
+      const brand = brandOf(guild, cfg);
+      await user
+        .send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(COLORS.blue)
+              .setDescription(`Your ticket has been transferred to **${ticket.categoryLabel}**. Someone from that team will follow up shortly.`)
+              .setFooter({ text: footerOf(guild, cfg), iconURL: guild.iconURL() ?? undefined })
+              .setTimestamp(new Date()),
+          ],
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  return { ok: true, message: `Ticket #${ticket.id} transferred (${changes.join(", ")}).` };
+}
+
+/** Sends the green "ISSUE RESOLVED" DM with auto-close timer (matching Screenshot 3). */
+export async function resolveTicketWithDelay(
+  client: Client,
+  guild: Guild,
+  ticket: Ticket,
+  actor: User,
+  delayMs: number,
+): Promise<void> {
+  const cfg = getGuildConfig(guild.id);
+  const brand = brandOf(guild, cfg);
+  const icon = guild.iconURL() ?? undefined;
+  const humanDelay = formatDuration(delayMs);
+
+  ticket.status = "resolving";
+  ticket.closeAt = Date.now() + delayMs;
+  scheduleSave();
+
+  const user = await client.users.fetch(ticket.userId).catch(() => null);
+  if (user) {
+    const dmEmbed = new EmbedBuilder()
+      .setColor(COLORS.green)
+      .setAuthor({ name: brand, iconURL: icon })
+      .setDescription(
+        [
+          `\`${brand.toUpperCase()} - ISSUE RESOLVED\``,
+          `This ticket will close automatically in ${humanDelay}. If you still need help, just send a message and the closure will be cancelled. If you don't need anything else, there's no need to reply.`,
+          "",
+          `Once it's closed, you're always welcome to open a new ticket in the future!`,
+          "",
+          `Thank you for contacting ${brand}!`,
+        ].join("\n"),
+      )
+      .setFooter({ text: `${brand} Support`, iconURL: icon })
+      .setTimestamp(new Date());
+    await user.send({ embeds: [dmEmbed] }).catch(() => undefined);
+  }
+
+  const thread = (guild.channels.cache.get(ticket.threadId) ??
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
+  if (thread?.isThread()) {
+    const unix = Math.floor(ticket.closeAt / 1000);
+    await thread
+      .send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(COLORS.green)
+            .setDescription(`Marked resolved by <@${actor.id}>. Auto-closing <t:${unix}:R> unless the user replies.`),
+        ],
+      })
+      .catch(() => undefined);
+  }
+}
+
+/** Closes the ticket immediately, sends the red closed embed (matching Screenshot 4), posts transcript, and locks/archives. */
+export async function closeTicketNow(
+  client: Client,
+  guild: Guild,
+  ticket: Ticket,
+  actor: User | null,
+  opts: { reason?: string | null; silent?: boolean } = {},
+): Promise<void> {
+  if (ticket.status === "closed") return;
+  const cfg = getGuildConfig(guild.id);
+  const brand = brandOf(guild, cfg);
+  const icon = guild.iconURL() ?? undefined;
+
+  ticket.status = "closed";
+  ticket.closeAt = null;
+  ticket.closedAt = Date.now();
+  ticket.closedById = actor?.id ?? client.user?.id ?? null;
+  ticket.closeReason = opts.reason ?? null;
+  const baseUrl = (process.env.BASE_URL?.trim() || "https://support.onboardops.org").replace(/\/+$/, "");
+  const transcriptUrl = `${baseUrl}/transcript/${ticket.id}`;
+  ticket.transcriptUrl = transcriptUrl;
+  scheduleSave();
+
+  if (!opts.silent) {
+    const user = await client.users.fetch(ticket.userId).catch(() => null);
+    if (user) {
+      const dmEmbed = new EmbedBuilder()
+        .setColor(COLORS.red)
+        .setTitle("Ticket closed")
+        .setDescription(
+          opts.reason
+            ? `This ticket has been closed by a member of our team.\n\n**Reason:** ${opts.reason}\n\nThank you for contacting ${brand}. If you have any further questions or concerns, don't hesitate to open another ticket. Have a great day!`
+            : `This ticket has been successfully closed by a member of our team. We thank you for contacting ${brand}. If you have any further questions or concerns, don't hesitate to open another ticket. Have a great day!`,
+        )
+        .addFields({ name: "Online Transcript", value: `[View Full Web Transcript](${transcriptUrl})` })
+        .setFooter({ text: footerOf(guild, cfg), iconURL: icon })
+        .setTimestamp(new Date());
+      await user.send({ embeds: [dmEmbed] }).catch(() => undefined);
+    }
+  }
+
+  const lines = [
+    `Modmail Transcript — Ticket #${ticket.id}`,
+    `Server: ${guild.name} (${guild.id})`,
+    `User: ${ticket.username} (${ticket.userId})`,
+    `Category: ${ticket.categoryLabel}`,
+    `Opened: ${new Date(ticket.createdAt).toISOString()}`,
+    `Closed: ${new Date().toISOString()}${actor ? ` by ${actor.username}` : " (auto-closed)"}`,
+    opts.reason ? `Reason: ${opts.reason}` : "",
+    `Web Transcript: ${transcriptUrl}`,
+    "------------------------------------------------------------",
+    ...ticket.messages.map((m) => `[${new Date(m.at).toISOString()}] [${m.role.toUpperCase()}] ${m.authorName}: ${m.content}`),
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const transcript = new AttachmentBuilder(Buffer.from(lines, "utf8"), {
+    name: `ticket-${ticket.id}-${ticket.username.replace(/[^a-z0-9_-]/gi, "") || "user"}.txt`,
+  });
+
+  if (cfg.modmailLogChannelId) {
+    const logCh = guild.channels.cache.get(cfg.modmailLogChannelId) as TextChannel | undefined;
+    if (logCh?.type === ChannelType.GuildText) {
+      await logCh
+        .send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(COLORS.red)
+              .setTitle(`Ticket #${ticket.id} Closed`)
+              .addFields(
+                { name: "User", value: `${ticket.username} (<@${ticket.userId}>)`, inline: true },
+                { name: "Category", value: `${ticket.categoryEmoji} ${ticket.categoryLabel}`, inline: true },
+                { name: "Closed by", value: actor ? `<@${actor.id}>` : "Auto-close", inline: true },
+                ...(opts.reason ? [{ name: "Reason", value: opts.reason }] : []),
+                { name: "Web Transcript", value: `[${transcriptUrl.replace(/^https?:\/\//, "")}](${transcriptUrl})`, inline: false },
+              )
+              .setTimestamp(new Date()),
+          ],
+          files: [transcript],
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  const thread = (guild.channels.cache.get(ticket.threadId) ??
+    (await guild.channels.fetch(ticket.threadId).catch(() => null))) as ThreadChannel | null;
+  if (thread?.isThread()) {
+    await thread
+      .send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(COLORS.red)
+            .setDescription(`Ticket closed${actor ? ` by <@${actor.id}>` : " automatically"}.\n**Web Transcript:** [${transcriptUrl.replace(/^https?:\/\//, "")}](${transcriptUrl})\nThread locked & archived.`),
+        ],
+      })
+      .catch(() => undefined);
+    await thread.setLocked(true).catch(() => undefined);
+    await thread.setArchived(true).catch(() => undefined);
+  }
+}
+
+/* ---------------- Staff Thread Buttons ---------------- */
+
+export async function handleModmailButton(client: Client, i: ButtonInteraction): Promise<void> {
+  if (!i.guild) return;
+  const [, action, ticketId] = i.customId.split(":");
+  const member = await i.guild.members.fetch(i.user.id).catch(() => null);
+  if (!isStaffMember(member, i.guild)) {
+    await i.reply({ content: "Only staff can manage Modmail tickets.", ephemeral: true });
+    return;
+  }
+
+  const ticket = getOpenTicketByThread(i.channelId);
+  if (!ticket || ticket.id !== ticketId) {
+    await i.reply({ content: "This ticket is already closed.", ephemeral: true });
+    return;
+  }
+
+  const cfg = getGuildConfig(i.guild.id);
+
+  if (action === "claim") {
+    ticket.claimedById = i.user.id;
+    scheduleSave();
+    await i.update({ components: [ticketControlRow(ticket.id, true)] });
+    await i.followUp({ content: `Claimed by <@${i.user.id}>.` });
+    return;
+  }
+
+  if (action === "transfer") {
+    const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`mm:transfer:${ticket.id}`)
+        .setPlaceholder("Choose a category to transfer this ticket to...")
+        .addOptions(
+          cfg.modmailCategories.slice(0, 25).map((c) => ({
+            label: c.label.slice(0, 100),
+            description: (c.description || "Transfer here").slice(0, 100),
+            value: c.id,
+            emoji: c.emoji || undefined,
+          })),
+        ),
+    );
+    await i.reply({ content: "Pick the destination category (or use `/transfer` for staff/role):", components: [row], ephemeral: true });
+    return;
+  }
+
+  if (action === "resolve") {
+    await i.deferReply({ ephemeral: true });
+    await resolveTicketWithDelay(client, i.guild, ticket, i.user, cfg.defaultCloseDelayMinutes * 60_000);
+    await i.editReply(`Sent resolution notice to user. Auto-closing in ${cfg.defaultCloseDelayMinutes} minutes unless they reply.`);
+    return;
+  }
+
+  if (action === "close") {
+    await i.deferReply({ ephemeral: true });
+    await closeTicketNow(client, i.guild, ticket, i.user);
+    await i.editReply(`Ticket #${ticket.id} closed.`);
+  }
+}
+
+/* ---------------- Auto-Close Background Sweep ---------------- */
+
+export async function sweepDueTicketClosures(client: Client): Promise<void> {
+  const due = getTicketsDueForClose(Date.now());
+  for (const ticket of due) {
+    const guild = client.guilds.cache.get(ticket.guildId);
+    if (!guild) {
+      ticket.status = "closed";
+      ticket.closedAt = Date.now();
+      scheduleSave();
+      continue;
+    }
+    await closeTicketNow(client, guild, ticket, null).catch(() => undefined);
+  }
+}
