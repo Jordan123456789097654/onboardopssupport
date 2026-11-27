@@ -200,8 +200,8 @@ const tag: Command = {
     if (sub === "send") {
       const name = i.options.getString("name", true);
       const ticket = getOpenTicketByThread(i.channelId);
-      // Built-in Modmail tags only exist inside an open ticket thread. Saved server tags work everywhere.
-      const builtin = ticket ? builtinTagByName(name) : undefined;
+      // Built-in tags work in any channel. Inside a Modmail ticket they go to the customer.
+      const builtin = builtinTagByName(name);
       const t = getTag(guild.id, name) ?? (builtin ? ({ guildId: guild.id, name: builtin.name, content: builtin.content, category: builtin.category, embed: false, authorId: "builtin", uses: 0, createdAt: 0, updatedAt: 0 } as unknown as Tag) : undefined);
       if (!t) {
         await i.reply({ content: `Tag \`${name}\` not found.`, ephemeral: true });

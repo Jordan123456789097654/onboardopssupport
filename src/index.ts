@@ -73,9 +73,11 @@ client.once(Events.ClientReady, async (c) => {
       const guild = c.guilds.cache.get(cfg.guildId);
       if (!guild) continue;
       migrateLegalCategory(cfg);
-      // Save the built-in ticket tags for this server. A tag already saved with the same name is left alone.
+      // Save the built-in tags for this server. Copies the bot saved earlier are refreshed to the current text.
       for (const b of BUILTIN_TAGS) {
-        if (getTag(guild.id, b.name)) continue;
+        const saved = getTag(guild.id, b.name);
+        // Keep anything a person created or edited. Refresh the copies this bot saved earlier.
+        if (saved && saved.authorId !== c.user.id) continue;
         upsertTag({ guildId: guild.id, name: b.name, content: b.content, category: b.category, embed: false, authorId: c.user.id, uses: 0, createdAt: Date.now(), updatedAt: Date.now() } as unknown as Tag);
       }
       await ensureCategoryChannels(guild, cfg).catch((e) => console.error("Category setup failed:", e instanceof Error ? e.message : e));
