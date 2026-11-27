@@ -83,7 +83,28 @@ client.once(Events.ClientReady, async (c) => {
       await ensureCategoryChannels(guild, cfg).catch((e) => console.error("Category setup failed:", e instanceof Error ? e.message : e));
     }
     // Status shown under the bot's name.
-    c.user.setPresence({ status: "idle", activities: [{ name: "Custom Status", type: ActivityType.Custom, state: "🎫 DM me to open a support ticket" }] });
+    // Rotating status: changes every minute.
+    const STATUSES = [
+      "🎫 DM me to open a support ticket",
+      "🕒 Replies within 2 business days",
+      "📘 Help center: onboardops.org/support",
+      "🟢 Live status: status.onboardops.org",
+    ];
+    let statusIndex = 0;
+    const rotateStatus = () => {
+      c.user.setPresence({ status: "idle", activities: [{ name: "Custom Status", type: ActivityType.Custom, state: STATUSES[statusIndex % STATUSES.length] }] });
+      statusIndex++;
+    };
+    rotateStatus();
+    setInterval(rotateStatus, 60_000);
+
+    // Heartbeat for the status page: a Kener heartbeat monitor expects a ping every minute.
+    const heartbeatUrl = process.env.KENER_HEARTBEAT_URL?.trim();
+    if (heartbeatUrl) {
+      const ping = () => fetch(heartbeatUrl).catch(() => undefined);
+      void ping();
+      setInterval(ping, 60_000);
+    }
     console.log(`Ready as ${c.user.tag}. ${allCommands.size} global commands registered across ${c.guilds.cache.size} server(s).`);
     setInterval(() => void sweepDueTicketClosures(c).catch((e) => console.error("Sweep error:", e)), 30_000);
     setInterval(() => void sweepSlaAndCloseWarnings(c).catch((e) => console.error("SLA sweep error:", e)), 60_000);
