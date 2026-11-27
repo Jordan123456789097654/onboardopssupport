@@ -633,7 +633,7 @@ export async function transferTicket(
   if (thread?.isThread()) {
     const embed = new EmbedBuilder()
       .setColor(COLORS.blue)
-      .setTitle("🔁 TRANSFERRING YOUR TICKET")
+      .setTitle(`${brandOf(guild, cfg).toUpperCase()} - TRANSFERRED`)
       .setDescription(changes.join("\n"))
       .addFields(
         { name: "Transferred by", value: `<@${opts.actor.id}>`, inline: true },
@@ -652,7 +652,7 @@ export async function transferTicket(
           embeds: [
             new EmbedBuilder()
               .setColor(COLORS.blue)
-              .setDescription(`🔁 **TRANSFERRING YOUR TICKET** to **${ticket.categoryLabel}**. Someone from that team will follow up shortly.`)
+              .setDescription(`You are now being transferred to the **${ticket.categoryLabel}** department. ${brandOf(guild, cfg)} will reply as soon as they can. They can see everything you've sent so far, so please make sure your question or issue is explained in detail to get help quickly once a team member is available.`)
               .setFooter({ text: footerOf(guild, cfg), iconURL: guild.iconURL() ?? undefined })
               .setTimestamp(new Date()),
           ],
