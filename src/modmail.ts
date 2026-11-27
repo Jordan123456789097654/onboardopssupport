@@ -238,6 +238,52 @@ export async function handleModmailSelect(client: Client, i: StringSelectMenuInt
   }
 }
 
+/* ---------------- Per-category channels ---------------- */
+
+const slugOf = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tickets";
+
+/**
+ * Makes one Discord category per Modmail category ("Modmail · General Questions") with a tickets channel inside it.
+ * Existing ones are reused by name, so running it twice is safe. Returns what changed.
+ */
+export async function ensureCategoryChannels(guild: Guild, cfg: GuildConfig): Promise<{ created: string[]; ready: string[]; failed: string[] }> {
+  const out = { created: [] as string[], ready: [] as string[], failed: [] as string[] };
+  for (const cat of cfg.modmailCategories) {
+    const existing = cat.channelId ? guild.channels.cache.get(cat.channelId) : undefined;
+    if (existing?.type === ChannelType.GuildText) {
+      out.ready.push(cat.label);
+      continue;
+    }
+    try {
+      const catName = `Modmail · ${cat.label}`.slice(0, 100);
+      let parent = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === catName);
+      if (!parent) {
+        parent = await guild.channels.create({ name: catName, type: ChannelType.GuildCategory, reason: "Modmail category" });
+      }
+      const chName = `tickets-${slugOf(cat.label)}`;
+      let ch = guild.channels.cache.find(
+        (c): c is TextChannel => c.type === ChannelType.GuildText && c.name === chName && c.parentId === parent!.id,
+      );
+      if (!ch) {
+        ch = await guild.channels.create({
+          name: chName,
+          type: ChannelType.GuildText,
+          parent: parent.id,
+          topic: `Support tickets for ${cat.label}. Each ticket is a thread in this channel.`,
+          reason: "Modmail category channel",
+        });
+      }
+      cat.channelId = ch.id;
+      out.created.push(cat.label);
+    } catch (e) {
+      console.error(`Could not set up channels for "${cat.label}":`, e instanceof Error ? e.message : e);
+      out.failed.push(cat.label);
+    }
+  }
+  scheduleSave();
+  return out;
+}
+
 /* ---------------- Open Ticket ---------------- */
 
 export async function openTicket(
@@ -247,9 +293,12 @@ export async function openTicket(
   cat: ModmailCategory,
   initial?: { text: string; files: string[] },
 ): Promise<Ticket | null> {
-  const inbox = cfg.modmailChannelId
-    ? (guild.channels.cache.get(cfg.modmailChannelId) as TextChannel | undefined)
-    : undefined;
+  // Each Modmail category gets its own tickets channel. Set them up on first use if they are missing.
+  if (!cat.channelId || guild.channels.cache.get(cat.channelId)?.type !== ChannelType.GuildText) {
+    await ensureCategoryChannels(guild, cfg);
+  }
+  const inbox = (cat.channelId ? guild.channels.cache.get(cat.channelId) : undefined) ??
+    (cfg.modmailChannelId ? guild.channels.cache.get(cfg.modmailChannelId) : undefined);
   if (!inbox || inbox.type !== ChannelType.GuildText) {
     await user.send({
       embeds: [new EmbedBuilder().setColor(COLORS.red).setDescription("Modmail inbox channel is missing or invalid. Please contact a server admin.")],

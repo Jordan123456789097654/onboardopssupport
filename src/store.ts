@@ -9,6 +9,8 @@ export type ModmailCategory = {
   description: string;
   emoji: string;
   staffRoleId?: string | null;
+  /** The tickets channel the bot created for this category, inside its own Discord category. */
+  channelId?: string | null;
 };
 
 export type AutomodConfig = {

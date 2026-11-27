@@ -1,5 +1,5 @@
 import { ChannelType, EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder, type TextChannel } from "discord.js";
-import { closeTicketNow, openTicket, requestCloseFromCustomer, resolveTicketWithDelay, sendStaffReply, transferTicket } from "../modmail";
+import { closeTicketNow, ensureCategoryChannels, openTicket, requestCloseFromCustomer, resolveTicketWithDelay, sendStaffReply, transferTicket } from "../modmail";
 import {
   DEFAULT_CATEGORIES,
   getGuildConfig,
@@ -19,6 +19,11 @@ const modmailConfig: Command = {
         .setName("channel")
         .setDescription("Set the channel where Modmail ticket threads are opened")
         .addChannelOption((o) => o.setName("channel").setDescription("Inbox channel for Modmail threads").addChannelTypes(ChannelType.GuildText).setRequired(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("setup")
+        .setDescription("Create a Discord category and tickets channel for each Modmail category"),
     )
     .addSubcommand((s) =>
       s
@@ -64,6 +69,18 @@ const modmailConfig: Command = {
       cfg.modmailChannelId = ch.id;
       scheduleSave();
       await i.reply({ content: `Modmail is now active in <#${ch.id}>. Users who DM the bot will see the category picker!`, ephemeral: true });
+      return;
+    }
+
+    if (sub === "setup") {
+      await i.deferReply({ ephemeral: true });
+      const r = await ensureCategoryChannels(i.guild!, cfg);
+      const lines = [
+        r.created.length ? `Created or updated: ${r.created.join(", ")}` : "",
+        r.ready.length ? `Already set up: ${r.ready.join(", ")}` : "",
+        r.failed.length ? `Could not set up: ${r.failed.join(", ")}. Check that I have Manage Channels.` : "",
+      ].filter(Boolean);
+      await i.editReply(lines.join("\n") || "No Modmail categories to set up.");
       return;
     }
 
