@@ -134,9 +134,11 @@ export function startWebServer(client: Client, opts: WebServerOptions = {}): exp
   app.use(cookieParser(secret));
 
   // Health check for Railway
+  // Always 200 while the process is up, so Railway doesn't restart the service during a slow Discord login.
+  // "ready" in the body shows whether Discord has connected yet.
   app.get("/healthz", (req, res) => {
     const ready = client.isReady();
-    res.status(ready ? 200 : 503).json({
+    res.status(200).json({
       status: ready ? "ok" : "down",
       ready,
       guilds: ready ? client.guilds.cache.size : 0,
