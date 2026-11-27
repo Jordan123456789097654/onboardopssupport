@@ -5,7 +5,8 @@ import {
   type ChatInputCommandInteraction,
 } from "discord.js";
 import { sendStaffReply } from "../modmail";
-import { deleteTag, getGuildTags, getOpenTicketByThread, getTag, scheduleSave, upsertTag } from "../store";
+import { deleteTag, getGuildTags, getOpenTicketByThread, getTag, scheduleSave, upsertTag, type Tag } from "../store";
+import { builtinTagByName } from "../builtin-tags";
 import { COLORS, isStaffMember } from "../util";
 import type { Command } from "./types";
 
@@ -198,13 +199,15 @@ const tag: Command = {
 
     if (sub === "send") {
       const name = i.options.getString("name", true);
-      const t = getTag(guild.id, name);
+      const ticket = getOpenTicketByThread(i.channelId);
+      // Built-in Modmail tags only exist inside an open ticket thread. Saved server tags work everywhere.
+      const builtin = ticket ? builtinTagByName(name) : undefined;
+      const t = getTag(guild.id, name) ?? (builtin ? ({ guildId: guild.id, name: builtin.name, content: builtin.content, category: builtin.category, embed: false, authorId: "builtin", uses: 0, createdAt: 0, updatedAt: 0 } as unknown as Tag) : undefined);
       if (!t) {
         await i.reply({ content: `Tag \`${name}\` not found.`, ephemeral: true });
         return;
       }
 
-      const ticket = getOpenTicketByThread(i.channelId);
       if (ticket) {
         if (!isStaffMember(member, guild)) {
           await i.reply({ content: "Only staff can send tags in Modmail tickets.", ephemeral: true });
